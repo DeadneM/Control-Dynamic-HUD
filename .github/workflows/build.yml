@@ -20,8 +20,8 @@ jobs:
           Copy-Item build-out/ControlDynamicHUD.dll dist/plugins/
           Copy-Item config/ControlDynamicHUD.ini dist/plugins/
           Copy-Item README.md dist/
-          Compress-Archive -Path dist/* -DestinationPath Control_Dynamic_HUD_V0.1_CI.zip -Force
+          Compress-Archive -Path dist/* -DestinationPath Control_Dynamic_HUD_V0.2_CI.zip -Force
       - uses: actions/upload-artifact@v4
         with:
-          name: Control-Dynamic-HUD
-          path: Control_Dynamic_HUD_V0.1_CI.zip
+          name: Control-Dynamic-HUD-V0.2
+          path: Control_Dynamic_HUD_V0.2_CI.zip
