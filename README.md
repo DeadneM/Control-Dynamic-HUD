@@ -6,17 +6,28 @@ The project exists because the original DynaHUD/UIFramework stack can repeatedly
 
 ## Current status
 
-**V0.1 Probe** is a diagnostic foundation. It does **not** change the HUD yet.
+### V0.2 HUD Lifecycle Probe
 
-It verifies that a single native x64 plugin can run under both `Control_DX11.exe` and `Control_DX12.exe`, detects the loaded Coherent UI module, and locates stable HUD-related strings without installing hooks or writing to game memory.
+V0.2 still makes **no visual HUD changes**. It identifies the native HUD factory by a signature shared by both DX11 and DX12, installs a small fail-open trampoline hook, calls the original game function, and logs each real factory invocation plus the returned HUD object pointer.
 
-Validated so far:
+Offline analysis of the supplied executables resolved the signature exactly once in both renderers:
 
-- DX12 plugin load: **working**
-- `CoherentUIGT.dll`: **detected**
-- `uiresources\\p7\\hud.ui`: **detected once**
-- `m_bIsHudVisible`: **detected once**
-- direct exported `Coherent::UIGT::Page::getView`: **not exported**, so V0.2 will resolve the HUD lifecycle through internal signatures instead
+- DX12 factory: RVA `0x3960E0`
+- DX12 HUD constructor: `0x1405F2570`
+- DX11 factory: RVA `0x3960E0`
+- DX11 HUD constructor: `0x1405F2510`
+
+These absolute addresses are **not hard-coded** by the plugin. They are documented results; V0.2 finds the factory from its byte signature and resolves the constructor from the relative call.
+
+### V0.1 results
+
+V0.1 validated the native plugin foundation under the user's normal DX12 path:
+
+- `Control_DX12.exe`: detected
+- `CoherentUIGT.dll`: loaded
+- `uiresources\\p7\\hud.ui`: one match
+- `m_bIsHudVisible`: one match
+- direct exported `Coherent::UIGT::Page::getView`: not available
 
 ## Installation
 
@@ -25,33 +36,29 @@ Validated so far:
 3. Copy `ControlDynamicHUD.dll` and `ControlDynamicHUD.ini` into the game's `plugins` folder.
 4. Start Control normally in DX11 or DX12.
 
-V0.1 writes its diagnostic log to:
+The plugin writes:
 
 ```text
 plugins\\ControlDynamicHUD.log
 ```
 
+For V0.2, play briefly, open/close the map and pause menu several times, then send the log. We want to learn whether the native HUD factory runs once per real HUD object or behaves like the noisy legacy `Menu ready` path.
+
 ## Roadmap
 
 - **V0.1**: DX11/DX12 native probe, no hooks or patches
-- **V0.2**: identify and hook the real `hud.ui` lifecycle once per true page instance
-- **V0.3**: dynamic health bar
+- **V0.2**: native HUD lifecycle factory probe
+- **V0.3**: inject a minimal bridge once per validated HUD object
+- **V0.4**: dynamic health bar
 - later: crosshair, ammo, mission/objective display, opacity and timing controls
 
-The long-term target is one DLL for both DX11 and DX12, signature-based where possible, fail-open on unsupported game builds, with no permanent per-frame polling.
+The long-term target is one DLL for both DX11 and DX12, signature-based where possible, fail-open on unsupported builds, and with no permanent per-frame polling.
 
-## Project layout
+## Safety model
 
-```text
-src/                    Native plugin source
-config/                 Default INI
-build/                   Local build helper scripts
-.github/workflows/      Reproducible CI build
-```
+V0.2 writes only the small entry detour required for its diagnostic factory hook. If the signature is missing or not unique, the plugin logs the condition and leaves the game untouched.
 
-## V0.1 safety model
-
-V0.1 performs no hooks, no patches, and no memory writes. It only reads loaded module metadata / executable memory for diagnostics and writes `ControlDynamicHUD.log`.
+It does not alter HUD state, gameplay values, save data, graphics state, or resource files.
 
 ## Credits
 
