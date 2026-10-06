@@ -41,11 +41,279 @@ using FnVirtualProtect = BOOL (WINAPI*)(LPVOID,usize,DWORD,DWORD*);
 using FnFlushInstructionCache = BOOL (WINAPI*)(HANDLE,LPCVOID,usize);
 
 typedef void* (WINAPI *FactoryFn)(void*, void*, void*, void*);
+typedef void* (WINAPI *PageGetViewFn)(void*);
+typedef void (WINAPI *ExecuteScriptFn)(void*, const char*, const char*);
+typedef void (WINAPI *ReadyFn)(void*);
 
 static HANDLE g_log = nullptr;
 static FnWriteFile g_WriteFile = nullptr;
 static FactoryFn g_originalFactory = nullptr;
+static PageGetViewFn g_pageGetView = nullptr;
+static ReadyFn g_originalReady = nullptr;
+static void* g_coherentBase = nullptr;
+static uptr* g_readyEntry = nullptr;
+static FnVirtualProtect g_VirtualProtect = nullptr;
+static FnFlushInstructionCache g_FlushInstructionCache = nullptr;
 static volatile u32 g_factoryCalls = 0;
+static volatile u32 g_readyCalls = 0;
+
+static constexpr u32 kCoherentTimeDateStamp = 0x5E8F6E9A;
+static constexpr u32 kCoherentSizeOfImage = 0x329000;
+static constexpr u32 kCoherentCheckSum = 0x00323A4A;
+static constexpr uptr kPublicViewVtableRva = 0x270780;
+static constexpr uptr kExecuteScriptRva = 0x82870;
+static constexpr uptr kViewPageOffset = 0xA8;
+
+static const char kSuiteScript[] = R"JS(
+(function(){
+ if(window.__ControlDynamicHUDSuite)return;
+ var CDH=window.__ControlDynamicHUDSuite={
+  version:'0.9',health:false,mission:false,crosshair:false,
+  hudVisible:true,active:true,lastError:''
+ };
+ var MODE={COMBAT:0,ADVENTURING:1,STORY:2,ACTION:3,EXAMINE:4,HIDDEN:5};
+ var playerMode=1,hudVisible=true,active=true;
+ var hp={bar:null,fill:null,obs:null,timer:0,shown:true};
+ var mission={map:null,log:null,obs:null,timer:0,shown:true};
+ var cross={el:null};
+ var resumeTimer=0,heartbeat=0,diagTimer=0,rebindTimer=0;
+
+ function addStyle(){
+  if(document.getElementById('cdh-suite-style'))return;
+  var s=document.createElement('style');s.id='cdh-suite-style';
+  s.textContent=
+   '.health-bar:not(.health-bar--hidden){transition:opacity 300ms var(--easing);}'
+  +'.health-bar[data-cdh-hidden="0"]:not(.health-bar--hidden){opacity:.8;}'
+  +'.health-bar[data-cdh-hidden="1"]:not(.health-bar--hidden){opacity:0;}'
+  +'.health-bar--hidden{opacity:0!important;}'
+  +'.mission-log-wrapper{transition:opacity 300ms var(--easing);}'
+  +'.mission-log-wrapper.cdh-hide{opacity:0;}'
+  +'.mission-log-wrapper.cdh-in-map{opacity:1!important;}'
+  +'.awesome-crosshair.cdh-hide{opacity:0;transition:opacity 300ms var(--easing);}'
+  +'#cdh-diagnostic{position:absolute;left:18px;top:18px;z-index:2147483647;'
+  +'font:15px monospace;color:white;background:rgba(0,0,0,.72);padding:10px 12px;'
+  +'pointer-events:none;white-space:pre;line-height:1.25;max-width:760px;}';
+  (document.head||document.documentElement).appendChild(s);
+ }
+
+ function clearTimer(o){if(o.timer){clearTimeout(o.timer);o.timer=0;}}
+ function disconnectObserver(o){if(o.obs){o.obs.disconnect();o.obs=null;}}
+ function setActive(v){
+  if(v===active)return;
+  active=v;CDH.active=v;
+  if(v)resumeHud();else suspendHud();
+ }
+ function recomputeActive(){
+  hudVisible=(g_HUDMode.m_bIsHudVisible!==false);
+  CDH.hudVisible=hudVisible;
+  setActive(hudVisible && playerMode!==MODE.HIDDEN);
+ }
+
+ function hpPercent(){
+  if(!hp.fill)return 1;
+  var ow=hp.fill.offsetWidth;
+  return ow?hp.fill.getBoundingClientRect().width/ow:1;
+ }
+ function setHpHidden(v){
+  if(!active||!hp.bar||!hp.bar.isConnected)return;
+  hp.bar.setAttribute('data-cdh-hidden',v?'1':'0');
+  hp.shown=!v;
+ }
+ function updateHealth(){
+  if(!active)return;
+  if(!hp.bar||!hp.fill||!hp.bar.isConnected||!hp.fill.isConnected){
+   CDH.health=false;scheduleRebind(50);return;
+  }
+  var should=(hpPercent()<1)||(playerMode===MODE.COMBAT);
+  if(should){clearTimer(hp);if(!hp.shown)setHpHidden(false);}
+  else if(hp.shown&&!hp.timer){
+   hp.timer=setTimeout(function(){
+    hp.timer=0;
+    if(active&&hp.bar&&hp.bar.isConnected)setHpHidden(true);
+   },2000);
+  }
+ }
+ function bindHealth(){
+  if(!active)return false;
+  if(window.g_runtimeInterfaceOptions&&g_runtimeInterfaceOptions.m_bPlayerStatsEnabled===false)return false;
+  var b=document.querySelector('.health-bar'),f=document.querySelector('.health-bar__fill');
+  if(!b||!f){CDH.health=false;return false;}
+  if(b!==hp.bar||f!==hp.fill||!hp.obs){
+   clearTimer(hp);disconnectObserver(hp);
+   hp.bar=b;hp.fill=f;hp.shown=true;
+   hp.obs=new MutationObserver(updateHealth);
+   hp.obs.observe(f,{attributes:true,attributeFilter:['style']});
+  }
+  CDH.health=true;updateHealth();return true;
+ }
+
+ function missionHide(ms){
+  if(!active||!mission.log)return;
+  clearTimer(mission);
+  mission.timer=setTimeout(function(){
+   mission.timer=0;
+   if(!active)return;
+   mission.shown=false;
+   if(mission.log&&mission.log.isConnected)mission.log.classList.add('cdh-hide');
+  },ms);
+ }
+ function missionShow(){
+  if(!active||!mission.log||!mission.log.isConnected)return;
+  clearTimer(mission);mission.shown=true;mission.log.classList.remove('cdh-hide');
+ }
+ function onMapChanged(){
+  if(!active)return;
+  if(!mission.map||!mission.log||!mission.map.isConnected||!mission.log.isConnected){
+   CDH.mission=false;scheduleRebind(50);return;
+  }
+  var inMap=mission.map.classList.contains('map--show');
+  mission.log.classList.toggle('cdh-in-map',inMap);
+  if(inMap)missionShow();else if(mission.shown)missionHide(3000);
+ }
+ function bindMission(){
+  if(!active)return false;
+  if(window.g_runtimeInterfaceOptions&&g_runtimeInterfaceOptions.m_bMissionHUDEnabled===false)return false;
+  var m=document.querySelector('.map-overlay'),l=document.querySelector('.mission-log-wrapper');
+  if(!m||!l){CDH.mission=false;return false;}
+  if(m!==mission.map||l!==mission.log||!mission.obs){
+   clearTimer(mission);disconnectObserver(mission);
+   mission.map=m;mission.log=l;mission.shown=true;
+   mission.log.classList.remove('cdh-hide');
+   mission.obs=new MutationObserver(onMapChanged);
+   mission.obs.observe(m,{attributes:true,attributeFilter:['class']});
+  }
+  CDH.mission=true;onMapChanged();
+  if(!m.classList.contains('map--show'))missionHide(2000);
+  return true;
+ }
+
+ function updateCrosshair(){
+  if(!active)return;
+  if(!cross.el||!cross.el.isConnected){CDH.crosshair=false;scheduleRebind(100);return;}
+  cross.el.classList.toggle('cdh-hide',playerMode===MODE.ADVENTURING);
+ }
+ function bindCrosshair(){
+  if(!active)return false;
+  var e=document.querySelector('.awesome-crosshair');
+  if(!e){cross.el=null;CDH.crosshair=false;return false;}
+  cross.el=e;CDH.crosshair=true;updateCrosshair();return true;
+ }
+
+ function rebind(){
+  rebindTimer=0;
+  if(!active)return;
+  addStyle();
+  bindHealth();bindMission();bindCrosshair();updateDiag();
+ }
+ function scheduleRebind(ms){
+  if(!active||rebindTimer)return;
+  rebindTimer=setTimeout(rebind,ms||0);
+ }
+ function rebindBurst(){
+  if(!active)return;
+  var delays=[0,100,250,500,1000];
+  for(var i=0;i<delays.length;i++){
+   (function(d){setTimeout(function(){if(active)rebind();},d);})(delays[i]);
+  }
+ }
+
+ function suspendHud(){
+  if(resumeTimer){clearTimeout(resumeTimer);resumeTimer=0;}
+  if(rebindTimer){clearTimeout(rebindTimer);rebindTimer=0;}
+  clearTimer(hp);clearTimer(mission);
+  disconnectObserver(hp);disconnectObserver(mission);
+  hp.bar=null;hp.fill=null;mission.map=null;mission.log=null;cross.el=null;
+  CDH.health=false;CDH.mission=false;CDH.crosshair=false;
+  updateDiag();
+ }
+ function resumeHud(){
+  if(resumeTimer)clearTimeout(resumeTimer);
+  resumeTimer=setTimeout(function(){
+   resumeTimer=0;
+   if(!active)return;
+   rebindBurst();
+  },150);
+ }
+
+ function heartbeatTick(){
+  if(!active)return;
+  var needs=
+   !hp.bar||!hp.fill||!hp.bar.isConnected||!hp.fill.isConnected||
+   !mission.map||!mission.log||!mission.map.isConnected||!mission.log.isConnected||
+   !cross.el||!cross.el.isConnected;
+  if(needs)scheduleRebind(0);
+ }
+
+ function yes(v){return v?'YES':'no';}
+ function updateDiag(){
+  var p=document.getElementById('cdh-diagnostic');if(!p)return;
+  p.textContent=
+   'Control Dynamic HUD v0.9 persistent-lifecycle suite\n'
+  +'HUD '+yes(hudVisible)+' | active '+yes(active)+' | playerMode '+playerMode+'\n'
+  +'engine '+yes(!!window.engine)+' | HUDMode '+yes(!!window.g_HUDMode)+' | missionModel '+yes(!!window.g_missionPromptUIData)+'\n'
+  +'health '+yes(!!document.querySelector('.health-bar'))+' / fill '+yes(!!document.querySelector('.health-bar__fill'))+'\n'
+  +'mission '+yes(!!document.querySelector('.mission-log-wrapper'))+' / map '+yes(!!document.querySelector('.map-overlay'))+'\n'
+  +'crosshair '+yes(!!document.querySelector('.awesome-crosshair'))+' / ammo '+yes(!!document.querySelector('.awesome-crosshair--ammo'))+'\n'
+  +'enemyHP '+yes(!!document.querySelector('.enemy-health-container'))+' / energy '+yes(!!document.querySelector('.ability-resource-bar'))+'\n'
+  +'source '+yes(!!document.querySelector('.essence-collector--hud'))+' / pickup '+yes(!!document.querySelector('.pickup-notifications-container'))+'\n'
+  +'interaction '+yes(!!document.querySelector('.interaction-marker-container'))+' / threat '+yes(!!document.querySelector('.threat-indicators'))+'\n'
+  +'expedition '+yes(!!document.querySelector('.expedition-hud > .expedition-mod-group'))+
+   (CDH.lastError?'\nERR '+CDH.lastError:'');
+ }
+ function startDiag(){
+  if(document.getElementById('cdh-diagnostic'))return;
+  var p=document.createElement('div');p.id='cdh-diagnostic';
+  (document.body||document.documentElement).appendChild(p);updateDiag();
+  var n=0;diagTimer=setInterval(function(){
+   updateDiag();
+   if(++n>=40){clearInterval(diagTimer);diagTimer=0;}
+  },500);
+  setTimeout(function(){var x=document.getElementById('cdh-diagnostic');if(x)x.remove();},22000);
+ }
+
+ window.addEventListener('error',function(e){
+  CDH.lastError=(e&&e.message)?String(e.message):'window error';
+  updateDiag();
+ });
+ window.addEventListener('unhandledrejection',function(e){
+  CDH.lastError='promise: '+String(e&&e.reason?e.reason:'unknown');
+  updateDiag();
+ });
+
+ var attempts=0;
+ function boot(){
+  if(!document.documentElement||!window.engine||!window.g_HUDMode){
+   if(++attempts<100)setTimeout(boot,100);
+   return;
+  }
+  playerMode=g_HUDMode.m_iPlayerMode;
+  hudVisible=(g_HUDMode.m_bIsHudVisible!==false);
+  active=hudVisible && playerMode!==MODE.HIDDEN;
+  CDH.hudVisible=hudVisible;CDH.active=active;
+
+  engine.addModelChangeListener(g_HUDMode,'m_iPlayerMode',function(){
+   playerMode=g_HUDMode.m_iPlayerMode;
+   recomputeActive();
+   if(active){updateHealth();updateCrosshair();scheduleRebind(0);}
+   updateDiag();
+  });
+  engine.addModelChangeListener(g_HUDMode,'m_bIsHudVisible',function(){
+   recomputeActive();updateDiag();
+  });
+  if(window.g_missionPromptUIData){
+   engine.addModelChangeListener(g_missionPromptUIData,'m_missionUIData',function(){
+    if(active&&mission.log){missionShow();missionHide(7000);}
+    updateDiag();
+   });
+  }
+
+  startDiag();
+  heartbeat=setInterval(heartbeatTick,1000);
+  if(active)rebindBurst();
+ }
+ boot();
+})();
+)JS";
 
 static inline void* get_peb() { void* peb; __asm__ __volatile__("movq %%gs:0x60, %0" : "=r"(peb)); return peb; }
 static u16 rd16(const void* p){ return *(const volatile u16*)p; }
@@ -103,6 +371,25 @@ static void log_hex(uptr v){char b[18];b[0]='0';b[1]='x';const char*h="012345678
 static void log_dec(u64 v){char b[32];int p=31;b[p--]=0;if(!v)b[p--]='0';while(v&&p>=0){b[p--]=char('0'+v%10);v/=10;}log_cstr(b+p+1);}
 static void log_wide(const UNICODE_STRING_T* us){if(!us||!us->Buffer){log_cstr("<unknown>");return;}char b[260];usize n=us->Length/2,o=0;for(usize i=0;i<n&&o<259;++i){wchar_t c=us->Buffer[i];b[o++]=(c>=32&&c<127)?char(c):'?';}b[o]=0;log_cstr(b);}
 
+static bool coherent_build_matches(void* module){
+    if(!module)return false;
+    u8* base=(u8*)module;
+    if(rd16(base)!=0x5A4D)return false;
+    u32 e=rd32(base+0x3C);
+    u8* nt=base+e;
+    if(rd32(nt)!=0x4550)return false;
+    u32 timestamp=rd32(nt+8);
+    u8* opt=nt+24;
+    if(rd16(opt)!=0x20B)return false;
+    u32 imageSize=rd32(opt+0x38);
+    u32 checksum=rd32(opt+0x40);
+    log_cstr("Coherent fingerprint: TimeDateStamp=");log_hex(timestamp);
+    log_cstr(" SizeOfImage=");log_hex(imageSize);
+    log_cstr(" CheckSum=");log_hex(checksum);log_bytes("\r\n",2);
+    return timestamp==kCoherentTimeDateStamp&&imageSize==kCoherentSizeOfImage&&checksum==kCoherentCheckSum;
+}
+
+
 static bool get_text(void* module,u8*& text,u32& size){
     u8* b=(u8*)module;if(!b||rd16(b)!=0x5A4D)return false;u32 e=rd32(b+0x3C);u8* nt=b+e;if(rd32(nt)!=0x4550)return false;u16 ns=rd16(nt+6),os=rd16(nt+20);u8* sec=nt+24+os;
     for(u16 i=0;i<ns;++i,sec+=40){ if(sec[0]=='.'&&sec[1]=='t'&&sec[2]=='e'&&sec[3]=='x'&&sec[4]=='t'){u32 vs=rd32(sec+8),va=rd32(sec+12);text=b+va;size=vs;return true;} } return false;
@@ -122,11 +409,99 @@ static uptr scan_factory(void* exe,u32& count){
 
 static void write_abs_jump(u8* at,void* dst){ at[0]=0xFF;at[1]=0x25;at[2]=0;at[3]=0;at[4]=0;at[5]=0;*(uptr*)(at+6)=(uptr)dst; }
 
+static void restore_ready_hook(){
+    if(!g_readyEntry||!g_originalReady||!g_VirtualProtect)return;
+    DWORD old=0;
+    if(g_VirtualProtect((void*)g_readyEntry,sizeof(uptr),PAGE_EXECUTE_READWRITE,&old)){
+        *g_readyEntry=(uptr)g_originalReady;
+        DWORD dummy=0;
+        g_VirtualProtect((void*)g_readyEntry,sizeof(uptr),old,&dummy);
+        if(g_FlushInstructionCache) g_FlushInstructionCache((HANDLE)(uptr)-1,(void*)g_readyEntry,sizeof(uptr));
+        log_line("Ready vtable hook restored.");
+    }
+    g_readyEntry=nullptr;
+}
+
+static void WINAPI HookReady(void* self){
+    u32 n=++g_readyCalls;
+    if(g_originalReady) g_originalReady(self);
+
+    void* view=(self&&g_pageGetView)?g_pageGetView(self):nullptr;
+    uptr viewPage=view?rdptr((u8*)view+kViewPageOffset):0;
+    uptr viewVtable=view?rdptr(view):0;
+    uptr execute=viewVtable?rdptr((u8*)viewVtable+61u*sizeof(uptr)):0;
+    uptr expectedVtable=(uptr)g_coherentBase+kPublicViewVtableRva;
+    uptr expected=(uptr)g_coherentBase+kExecuteScriptRva;
+
+    log_cstr("HUD onReadyForBindings #");log_dec(n);
+    log_cstr(" View*=");log_hex((uptr)view);
+    log_cstr(" ViewVtable=");log_hex(viewVtable);
+    log_cstr(" ViewPage*=");log_hex(viewPage);
+    log_cstr(" ExecuteScript=");log_hex(execute);
+    log_bytes("\r\n",2);
+
+    if(!view||!viewPage||!viewVtable||!execute){
+        log_line("FAIL-OPEN: ready callback did not expose an injectable View; restoring lifecycle hook.");
+        restore_ready_hook();
+        return;
+    }
+    if(viewVtable!=expectedVtable){
+        log_cstr("FAIL-OPEN: public View vtable mismatch; expected ");log_hex(expectedVtable);
+        log_cstr(" got ");log_hex(viewVtable);log_bytes("\r\n",2);
+        restore_ready_hook();
+        return;
+    }
+    if(execute!=expected){
+        log_cstr("FAIL-OPEN: public View vtable[61] mismatch; expected ");log_hex(expected);
+        log_cstr(" got ");log_hex(execute);log_bytes("\r\n",2);
+        restore_ready_hook();
+        return;
+    }
+
+    log_line("Calling View::ExecuteScript through vtable[61] for this HUD binding context.");
+    ((ExecuteScriptFn)execute)(view,kSuiteScript,nullptr);
+    log_line("Cumulative HUD suite injected for current binding context; slot-28 hook remains active.");
+}
+
+static bool install_ready_hook(void* hud){
+    if(!hud||!g_VirtualProtect)return false;
+    uptr vtbl=rdptr(hud);
+    if(!vtbl)return false;
+    uptr* entry=(uptr*)(vtbl + 28u*sizeof(uptr));
+    uptr original=*entry;
+    if(!original)return false;
+
+    g_originalReady=(ReadyFn)original;
+    g_readyEntry=entry;
+
+    log_cstr("HUD onReadyForBindings vtable entry[28]: ");log_hex((uptr)entry);
+    log_cstr(" original=");log_hex(original);log_bytes("\r\n",2);
+
+    DWORD old=0;
+    if(!g_VirtualProtect((void*)entry,sizeof(uptr),PAGE_EXECUTE_READWRITE,&old)){
+        g_readyEntry=nullptr; g_originalReady=nullptr; return false;
+    }
+    *entry=(uptr)&HookReady;
+    DWORD dummy=0;
+    g_VirtualProtect((void*)entry,sizeof(uptr),old,&dummy);
+    if(g_FlushInstructionCache) g_FlushInstructionCache((HANDLE)(uptr)-1,(void*)entry,sizeof(uptr));
+    log_line("Persistent onReadyForBindings lifecycle hook installed.");
+    return true;
+}
+
 static void* WINAPI HookFactory(void* a,void* b,void* c,void* d){
     u32 n=++g_factoryCalls;
     log_cstr("HUD factory call #");log_dec(n);log_cstr(" arg3=");log_hex((uptr)c);log_bytes("\r\n",2);
     void* r=g_originalFactory?g_originalFactory(a,b,c,d):nullptr;
     log_cstr("HUD object returned: ");log_hex((uptr)r);log_bytes("\r\n",2);
+    if(r){
+        uptr vtbl=rdptr((u8*)r+0x00);
+        void* system=(void*)rdptr((u8*)r+0x10);
+        u32 pageIndex=rd32((u8*)r+0x18);
+        log_cstr("HUD vtable: ");log_hex(vtbl);log_bytes("\r\n",2);
+        log_cstr("Initial HUD System*: ");log_hex((uptr)system);log_cstr(" pageIndex=");log_dec(pageIndex);log_bytes("\r\n",2);
+        if(!g_readyEntry && !install_ready_hook(r)) log_line("FAIL-OPEN: could not install persistent ready hook.");
+    }
     return r;
 }
 
@@ -141,18 +516,29 @@ static bool install_hook(WinApi& api,uptr target){
     DWORD dummy=0;api.VirtualProtect((void*)target,stolen,old,&dummy);api.FlushInstructionCache((HANDLE)(uptr)-1,(void*)target,stolen);return true;
 }
 
-extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 2;}
+extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 90;}
 extern "C" __declspec(dllexport) void* CDH_RelocAnchor=(void*)&CDH_Version;
 
 extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     if(reason!=DLL_PROCESS_ATTACH)return 1; WinApi api{};if(!init_api(api))return 1;
+    g_VirtualProtect=api.VirtualProtect;
+    g_FlushInstructionCache=api.FlushInstructionCache;
     g_WriteFile=api.WriteFile;g_log=api.CreateFileW(L"plugins\\ControlDynamicHUD.log",GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
     if(!g_log||(uptr)g_log==INVALID_HANDLE_VALUE_U)return 1;
-    log_line("Control Dynamic HUD V0.2 HUD LIFECYCLE PROBE");log_line("Mode: diagnostic factory hook only (no HUD visual changes)");
+    log_line("Control Dynamic HUD V0.9 PERSISTENT HUD LIFECYCLE SUITE");log_line("Mode: persistent slot-28 reinjection + bounded rebind + health + mission + crosshair + selector diagnostics");
     log_cstr("Executable: ");log_wide(first_module_name());log_bytes("\r\n",2);void* exe=first_module_base();log_cstr("Executable base: ");log_hex((uptr)exe);log_bytes("\r\n",2);
-    void* coh=find_module("coherentuigt.dll");log_cstr("CoherentUIGT.dll: ");if(coh){log_hex((uptr)coh);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
+    void* coh=find_module("coherentuigt.dll");g_coherentBase=coh;log_cstr("CoherentUIGT.dll: ");if(coh){log_hex((uptr)coh);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
+    void* ui=find_module("ui_rmdwin10_f.dll");log_cstr("ui_rmdwin10_f.dll: ");if(ui){log_hex((uptr)ui);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
+    const char* pageGetViewName="?getView@Page@ui@@QEAAPEAVView@UIGT@Coherent@@XZ";
+    g_pageGetView=ui?(PageGetViewFn)resolve_export(ui,pageGetViewName):nullptr;
+    log_cstr("ui::Page::getView export: ");if(g_pageGetView)log_hex((uptr)g_pageGetView);else log_cstr("NOT FOUND");log_bytes("\r\n",2);
+    if(!coherent_build_matches(coh)){
+        log_line("FAIL-OPEN: unsupported CoherentUIGT build; no hook installed.");
+        return 1;
+    }
     u32 count=0;uptr factory=scan_factory(exe,count);log_cstr("HUD factory signature matches: ");log_dec(count);log_cstr(" first=");log_hex(factory);log_bytes("\r\n",2);
     if(count!=1||!factory){log_line("FAIL-OPEN: unique HUD factory not found; no hook installed.");return 1;}
+    if(!g_pageGetView){log_line("FAIL-OPEN: ui::Page::getView export not found; no hook installed.");return 1;}
     s32 rel=*(s32*)(factory+0x32);uptr ctor=factory+0x36+(s64)rel;
     log_cstr("HUD constructor target: ");log_hex(ctor);log_bytes("\r\n",2);
     if(!install_hook(api,factory)){log_line("FAIL-OPEN: hook installation failed.");return 1;}
