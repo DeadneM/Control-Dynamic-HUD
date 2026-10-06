@@ -15,11 +15,11 @@ V0.9 fixed the core lifecycle problems:
 - persistent slot-28 lifecycle hook survives pause/menu page recreation;
 - no legacy per-frame reinjection storm.
 
-### V1.0I configurable test branch
+### V1.0J configurable test branch
 
 Branch: `dev/v1.0-configurable-hud`
 
-V1.0I adds configuration through `plugins/ControlDynamicHUD.ini`.
+V1.0J adds configuration through `plugins/ControlDynamicHUD.ini`.
 
 Currently configurable:
 
@@ -137,7 +137,7 @@ HideNewGame=0
 HideMissionSelect=0
 ```
 
-Both options are **off by default**. When either option is enabled, the plugin hooks the separate `menu.ui` page and hides only the matching main-menu entry.
+Both options are **off by default**. When either option is enabled, the plugin hooks the separate `menu.ui` page. V1.0J hard-disables the matching entry, removes it from the DOM, removes keyboard focus, blocks pointer input, and installs capture-phase guards so the hidden entry cannot still be activated.
 
 ### Multi Launch held-object input glyphs
 
@@ -172,7 +172,7 @@ The important current-build findings are:
 
 - V1.0D real-aim crosshair behavior validated;
 - validate V1.0I fully-native Multi Launch button-opacity override;
-- validate V1.0I broader main-menu text matching when explicitly enabled;
+- validate V1.0J safe main-menu removal with no remaining clickable/focusable hitbox;
 - validate the hardened Expedition forced-modifier behavior;
 - add configurable behavior for additional HUD elements where safe;
 - optional in-game configuration overlay later;
