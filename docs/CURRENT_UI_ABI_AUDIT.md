@@ -54,19 +54,56 @@ The DX11/DX12 function bodies differ only by their expected small renderer-build
 
 ## Coherent View ABI
 
-The concrete View vtable used by this `coherentuigt.dll` is assigned at RVA `0x281028`.
+The current Coherent DLL contains **two distinct View-related virtual interfaces** that must not be confused.
 
-Verified entries:
+### Public UIGTView wrapper returned by ui::Page::getView()
 
-- slot 13 (`+0x68`) -> RVA `0xD9A90`, the scripted-animation service used by modern Control UI mods as a Coherent-thread execution point.
-- slot 61 (`+0x1E8`) -> RVA `0xDBD00`, `Coherent::UIGT::View::ExecuteScript(const char*, const char*)`.
+The runtime View returned by the exported current-game `ui::Page::getView()` uses a vtable at:
 
-The function body at `0xDBD00` confirms the x64 argument layout:
-- RCX = View `this`
+```text
+CoherentUIGT + 0x270780
+```
+
+This is not inferred from one runtime sample only. Two constructors in `coherentuigt.dll` explicitly assign that vtable.
+
+For this public wrapper:
+
+```text
+slot 61 (+0x1E8) -> CoherentUIGT + 0x82870
+```
+
+The function at `+0x82870` has the expected public ExecuteScript signature:
+
+- RCX = wrapper View `this`
 - RDX = script C string
-- R8 = frame selector
+- R8  = frame selector
 
-Although the absolute RVA is correct for this exact DLL, Control Dynamic HUD should call the method through `View->vtable[61]` and verify that the resolved pointer belongs to the known Coherent module/build.
+Its implementation allocates a command object, copies both strings into that command, and enqueues it through the wrapper's command queue. This matches the historical reg2k pattern:
+
+```cpp
+uiView->ExecuteScript(script);
+```
+
+Therefore **the correct ExecuteScript target for the View returned by `ui::Page::getView()` is `+0x82870` on this exact Coherent build**.
+
+### Internal View implementation
+
+A separate internal vtable exists at:
+
+```text
+CoherentUIGT + 0x281028
+```
+
+For that internal object:
+
+```text
+slot 13 -> CoherentUIGT + 0xD9A90
+slot 61 -> CoherentUIGT + 0xDBD00
+```
+
+The function at `+0xDBD00` is therefore valid for the **internal implementation object**, but it is not directly callable with the public wrapper returned by `ui::Page::getView()`.
+
+This distinction is the root cause of the V0.5/V0.5A crashes.
 
 ## ui::Page::getView
 
@@ -77,15 +114,27 @@ The current export:
 RVA 0x2980
 ```
 
-reads the page index at `Page+0x18` and returns the corresponding native View pointer from the current UI system's page table.
+reads the page index at `Page+0x18` and returns the pointer stored in the current UI system's page table. Runtime verification showed this returned object's vtable slot 61 resolving to `CoherentUIGT + 0x82870`, exactly matching the public-wrapper vtable assigned by the constructors above.
 
 ## V0.5 / V0.5A crash explanation
 
-Both failed builds successfully reached a valid HUD object, valid `ui::Page::getView()`, valid native View pointer and non-null internal View page.
+Both failed builds reached:
 
-They then called `ExecuteScript` while hooked from slot 27, which on the current ABI is the page update path, not `onReadyForBindings`.
+- a valid HUD page;
+- a valid `ui::Page::getView()` result;
+- a non-null internal View page pointer.
 
-The JavaScript body is ruled out because V0.5A used only a trivial assignment and crashed at the same native call boundary.
+They then called `CoherentUIGT + 0xDBD00` directly using the **public wrapper pointer as RCX**. That address belongs to the separate internal View implementation, so the call used the wrong object layout and crashed.
+
+V0.5A proved that the JavaScript body was not responsible because a trivial assignment crashed at the same native call boundary.
+
+V0.5R then used fail-open validation and did not crash. Its runtime log resolved:
+
+```text
+View->vtable[61] = CoherentUIGT + 0x82870
+```
+
+which matches the statically reconstructed public wrapper ABI.
 
 ## Corrected implementation rule
 
@@ -94,10 +143,11 @@ Future builds must:
 1. start from the V0.4 native factory/lifecycle base;
 2. hook HUD page **slot 28**, not 27;
 3. call the original slot 28 callback first;
-4. obtain the View through exported `ui::Page::getView()`;
-5. resolve `ExecuteScript` from `View->vtable[61]`;
-6. validate the Coherent build/pointer;
-7. restore the temporary ready hook **before** executing custom script, eliminating re-entrant use of the hook;
-8. fail open on any mismatch.
+4. obtain the public wrapper View through exported `ui::Page::getView()`;
+5. verify the wrapper vtable is the expected current-build public vtable at `CoherentUIGT + 0x270780`;
+6. resolve `ExecuteScript` through `View->vtable[61]` and verify it equals `CoherentUIGT + 0x82870`;
+7. never call the internal `+0xDBD00` implementation with the public wrapper pointer;
+8. restore the temporary ready hook **before** executing custom script, eliminating re-entrant use of the hook;
+9. fail open on any mismatch.
 
 This replaces the obsolete 2020 slot-27 assumption and is the current canonical ABI model for the project.
