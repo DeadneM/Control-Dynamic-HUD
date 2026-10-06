@@ -140,24 +140,6 @@ static const char kHealthScript[] = R"JS(
 })();
 )JS";
 
-static bool coherent_build_matches(void* module){
-    if(!module)return false;
-    u8* base=(u8*)module;
-    if(rd16(base)!=0x5A4D)return false;
-    u32 e=rd32(base+0x3C);
-    u8* nt=base+e;
-    if(rd32(nt)!=0x4550)return false;
-    u32 timestamp=rd32(nt+8);
-    u8* opt=nt+24;
-    if(rd16(opt)!=0x20B)return false;
-    u32 imageSize=rd32(opt+0x38);
-    u32 checksum=rd32(opt+0x40);
-    log_cstr("Coherent fingerprint: TimeDateStamp=");log_hex(timestamp);
-    log_cstr(" SizeOfImage=");log_hex(imageSize);
-    log_cstr(" CheckSum=");log_hex(checksum);log_bytes("\r\n",2);
-    return timestamp==kCoherentTimeDateStamp&&imageSize==kCoherentSizeOfImage&&checksum==kCoherentCheckSum;
-}
-
 static inline void* get_peb() { void* peb; __asm__ __volatile__("movq %%gs:0x60, %0" : "=r"(peb)); return peb; }
 static u16 rd16(const void* p){ return *(const volatile u16*)p; }
 static u32 rd32(const void* p){ return *(const volatile u32*)p; }
@@ -213,6 +195,25 @@ static void log_line(const char* s){log_cstr(s);log_bytes("\r\n",2);}
 static void log_hex(uptr v){char b[18];b[0]='0';b[1]='x';const char*h="0123456789ABCDEF";for(int i=0;i<16;++i)b[2+i]=h[(v>>((15-i)*4))&15];log_bytes(b,18);}
 static void log_dec(u64 v){char b[32];int p=31;b[p--]=0;if(!v)b[p--]='0';while(v&&p>=0){b[p--]=char('0'+v%10);v/=10;}log_cstr(b+p+1);}
 static void log_wide(const UNICODE_STRING_T* us){if(!us||!us->Buffer){log_cstr("<unknown>");return;}char b[260];usize n=us->Length/2,o=0;for(usize i=0;i<n&&o<259;++i){wchar_t c=us->Buffer[i];b[o++]=(c>=32&&c<127)?char(c):'?';}b[o]=0;log_cstr(b);}
+
+static bool coherent_build_matches(void* module){
+    if(!module)return false;
+    u8* base=(u8*)module;
+    if(rd16(base)!=0x5A4D)return false;
+    u32 e=rd32(base+0x3C);
+    u8* nt=base+e;
+    if(rd32(nt)!=0x4550)return false;
+    u32 timestamp=rd32(nt+8);
+    u8* opt=nt+24;
+    if(rd16(opt)!=0x20B)return false;
+    u32 imageSize=rd32(opt+0x38);
+    u32 checksum=rd32(opt+0x40);
+    log_cstr("Coherent fingerprint: TimeDateStamp=");log_hex(timestamp);
+    log_cstr(" SizeOfImage=");log_hex(imageSize);
+    log_cstr(" CheckSum=");log_hex(checksum);log_bytes("\r\n",2);
+    return timestamp==kCoherentTimeDateStamp&&imageSize==kCoherentSizeOfImage&&checksum==kCoherentCheckSum;
+}
+
 
 static bool get_text(void* module,u8*& text,u32& size){
     u8* b=(u8*)module;if(!b||rd16(b)!=0x5A4D)return false;u32 e=rd32(b+0x3C);u8* nt=b+e;if(rd32(nt)!=0x4550)return false;u16 ns=rd16(nt+6),os=rd16(nt+20);u8* sec=nt+24+os;
