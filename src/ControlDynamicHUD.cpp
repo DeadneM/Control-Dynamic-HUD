@@ -104,6 +104,10 @@ struct Config {
     u32 crosshairHideDelayMs;
     u32 crosshairFadeDurationMs;
 
+    bool crosshairDotEnabled;
+    u32 crosshairDotHideDelayMs;
+    u32 crosshairDotFadeDurationMs;
+
     bool expeditionEnabled;
     u32 expeditionHideDelayMs;
     u32 expeditionFadeDurationMs;
@@ -135,11 +139,11 @@ static const char kMainMenuScript[] = R"JS(
  if(window.__ControlDynamicHUDMainMenu)return;
  var CFG=window.__CDH_MAINMENU_CONFIG||{hideNewGame:0,hideMissionSelect:0};
  if(!CFG.hideNewGame&&!CFG.hideMissionSelect)return;
- window.__ControlDynamicHUDMainMenu={version:'1.0L'};
+ window.__ControlDynamicHUDMainMenu={version:'1.0M'};
 
  var style=document.createElement('style');
  style.id='cdh-mainmenu-style';
- style.textContent='[data-cdh-mainmenu-hidden="1"]{visibility:hidden!important;opacity:0!important;pointer-events:none!important;}';
+ style.textContent='[data-cdh-mainmenu-hidden="1"]{display:none!important;visibility:hidden!important;opacity:0!important;pointer-events:none!important;}';
  (document.head||document.documentElement).appendChild(style);
 
  function norm(s){
@@ -203,10 +207,11 @@ static const char kSuiteScript[] = R"JS(
   healthEnabled:1,healthHideDelayMs:2000,healthFadeDurationMs:300,healthOpacityPercent:80,healthShowDuringCombat:1,healthThresholdPercent:100,
   missionEnabled:1,missionInitialHideDelayMs:2000,missionAfterMapCloseHideDelayMs:3000,missionUpdateVisibleMs:7000,missionFadeDurationMs:300,missionShowInMap:1,
   crosshairEnabled:1,crosshairHideDelayMs:1000,crosshairFadeDurationMs:300,
+  crosshairDotEnabled:1,crosshairDotHideDelayMs:0,crosshairDotFadeDurationMs:150,
   expeditionEnabled:1,expeditionHideDelayMs:2000,expeditionFadeDurationMs:300
  };
  var CDH=window.__ControlDynamicHUDSuite={
-  version:'1.0L',health:false,mission:false,crosshair:false,expedition:false,
+  version:'1.0M',health:false,mission:false,crosshair:false,expedition:false,
   hudVisible:true,active:true,lastError:'',forceVisible:false
  };
  var MODE={COMBAT:0,ADVENTURING:1,STORY:2,ACTION:3,EXAMINE:4,HIDDEN:5};
@@ -214,6 +219,7 @@ static const char kSuiteScript[] = R"JS(
  var hp={bar:null,fill:null,obs:null,timer:0,shown:true};
  var mission={map:null,log:null,obs:null,timer:0,shown:true};
  var cross={el:null,timer:0,shown:true,hideLatched:false};
+ var crossDot={el:null,timer:0,hidden:false};
  var expedition={el:null,timer:0,shown:true};
  var resumeTimer=0,heartbeat=0,diagTimer=0,rebindTimer=0,forceTimer=0,forceUntil=0;
 
@@ -231,6 +237,7 @@ static const char kSuiteScript[] = R"JS(
   +'.mission-log-wrapper.cdh-in-map{opacity:1!important;}'
   +'.awesome-crosshair{transition:opacity '+CFG.crosshairFadeDurationMs+'ms var(--easing);}'
   +'.awesome-crosshair[data-cdh-crosshair-hidden="1"]{opacity:0!important;}'
+  +'.awesome-crosshair [data-cdh-crosshair-dot-hidden="1"]{opacity:0!important;visibility:hidden!important;transition:opacity '+CFG.crosshairDotFadeDurationMs+'ms var(--easing);}'
   +'.expedition-hud>.expedition-mod-group{transition:opacity '+CFG.expeditionFadeDurationMs+'ms var(--easing);}'
   +'.expedition-hud>.expedition-mod-group[data-cdh-expedition-hidden="1"]{opacity:0!important;}'
   +'#cdh-diagnostic{position:absolute;left:18px;top:18px;z-index:2147483647;'
@@ -380,6 +387,64 @@ static const char kSuiteScript[] = R"JS(
   return true;
  }
 
+ function clearCrosshairDot(){
+  clearTimer(crossDot);
+  if(crossDot.el&&crossDot.el.isConnected)crossDot.el.removeAttribute('data-cdh-crosshair-dot-hidden');
+  crossDot.el=null;crossDot.hidden=false;
+ }
+ function dotSemanticScore(e){
+  var s=(String(e.className||'')+' '+String(e.id||'')).toLowerCase();
+  var score=0;
+  if(/dot/.test(s))score+=100;
+  if(/center|centre|middle/.test(s))score+=70;
+  if(/point/.test(s))score+=60;
+  if(/reticl|crosshair/.test(s))score+=20;
+  return score;
+ }
+ function findCrosshairDot(){
+  if(!cross.el||!cross.el.isConnected)return null;
+  var pr=cross.el.getBoundingClientRect();
+  var cx=pr.left+pr.width/2,cy=pr.top+pr.height/2;
+  var nodes=cross.el.querySelectorAll('*');
+  var best=null,bestScore=-1e9;
+  for(var i=0;i<nodes.length;i++){
+   var e=nodes[i];
+   if(e.closest&&e.closest('.awesome-crosshair--ammo'))continue;
+   var r=e.getBoundingClientRect();
+   if(r.width<=0||r.height<=0||r.width>24||r.height>24)continue;
+   var ex=r.left+r.width/2,ey=r.top+r.height/2;
+   var dist=Math.abs(ex-cx)+Math.abs(ey-cy);
+   if(dist>12)continue;
+   var semantic=dotSemanticScore(e);
+   var area=r.width*r.height;
+   var score=semantic-dist*5-area*0.05;
+   if(score>bestScore){bestScore=score;best=e;}
+  }
+  return best;
+ }
+ function setCrosshairDotHidden(v){
+  if(!CFG.crosshairDotEnabled)return;
+  var e=findCrosshairDot();
+  if(!e)return;
+  if(crossDot.el&&crossDot.el!==e&&crossDot.el.isConnected)
+   crossDot.el.removeAttribute('data-cdh-crosshair-dot-hidden');
+  crossDot.el=e;crossDot.hidden=!!v;
+  e.setAttribute('data-cdh-crosshair-dot-hidden',v?'1':'0');
+ }
+ function updateCrosshairDot(){
+  if(!CFG.crosshairDotEnabled){clearCrosshairDot();return;}
+  if(!active||!cross.el||!cross.el.isConnected)return;
+  if(isForced()){clearTimer(crossDot);setCrosshairDotHidden(false);return;}
+  if(CFG.crosshairDotHideDelayMs===0){setCrosshairDotHidden(true);return;}
+  if(crossDot.hidden){setCrosshairDotHidden(true);return;}
+  if(!crossDot.timer){
+   crossDot.timer=setTimeout(function(){
+    crossDot.timer=0;
+    if(active&&!isForced())setCrosshairDotHidden(true);
+   },CFG.crosshairDotHideDelayMs);
+  }
+ }
+
  function setExpeditionHidden(v){
   if(!expedition.el||!expedition.el.isConnected)return;
   expedition.el.setAttribute('data-cdh-expedition-hidden',v?'1':'0');expedition.shown=!v;
@@ -414,7 +479,7 @@ static const char kSuiteScript[] = R"JS(
   rebindTimer=0;
   if(!active)return;
   addStyle();
-  bindHealth();bindMission();bindCrosshair();bindExpedition();updateDiag();
+  bindHealth();bindMission();bindCrosshair();updateCrosshairDot();bindExpedition();updateDiag();
  }
  function scheduleRebind(ms){
   if(!active||rebindTimer)return;
@@ -431,9 +496,9 @@ static const char kSuiteScript[] = R"JS(
  function suspendHud(){
   if(resumeTimer){clearTimeout(resumeTimer);resumeTimer=0;}
   if(rebindTimer){clearTimeout(rebindTimer);rebindTimer=0;}
-  clearTimer(hp);clearTimer(mission);clearTimer(cross);clearTimer(expedition);
+  clearTimer(hp);clearTimer(mission);clearTimer(cross);clearTimer(crossDot);clearTimer(expedition);
   disconnectObserver(hp);disconnectObserver(mission);
-  hp.bar=null;hp.fill=null;mission.map=null;mission.log=null;cross.el=null;expedition.el=null;
+  hp.bar=null;hp.fill=null;mission.map=null;mission.log=null;clearCrosshairDot();cross.el=null;expedition.el=null;
   CDH.health=false;CDH.mission=false;CDH.crosshair=false;CDH.expedition=false;
   updateDiag();
  }
@@ -462,14 +527,14 @@ static const char kSuiteScript[] = R"JS(
   clearTimer(hp);clearTimer(mission);clearTimer(cross);clearTimer(expedition);
   if(hp.bar)setHpHidden(false);
   if(mission.log)missionShow();
-  if(cross.el)setCrossHidden(false);
+  if(cross.el){setCrossHidden(false);setCrosshairDotHidden(false);}
   if(expedition.el)setExpeditionHidden(false);
   if(forceTimer)clearTimeout(forceTimer);
   forceTimer=setTimeout(function(){
    forceTimer=0;forceUntil=0;CDH.forceVisible=false;
    if(!active)return;
-   cross.hideLatched=false;
-   updateHealth();onMapChanged();updateCrosshair();scheduleExpeditionHide();
+   cross.hideLatched=false;crossDot.hidden=false;
+   updateHealth();onMapChanged();updateCrosshair();updateCrosshairDot();scheduleExpeditionHide();
   },CFG.showHudDurationMs);
   updateDiag();
  }
@@ -480,9 +545,9 @@ static const char kSuiteScript[] = R"JS(
   if(!CFG.diagnostics)return;
   var p=document.getElementById('cdh-diagnostic');if(!p)return;
   p.textContent=
-   'Control Dynamic HUD v1.0L configurable suite\n'
+   'Control Dynamic HUD v1.0M configurable suite\n'
   +'HUD '+yes(hudVisible)+' | active '+yes(active)+' | force '+yes(isForced())+' | aim '+yes(isAiming)+' | key '+CFG.showHudKey+'\n'
-  +'health '+yes(CDH.health)+' | mission '+yes(CDH.mission)+' | crosshair '+yes(CDH.crosshair)+' | expedition '+yes(CDH.expedition)+'\n'
+  +'health '+yes(CDH.health)+' | mission '+yes(CDH.mission)+' | crosshair '+yes(CDH.crosshair)+' | dot '+yes(crossDot.hidden)+' | expedition '+yes(CDH.expedition)+'\n'
   +'ammo '+yes(!!document.querySelector('.awesome-crosshair--ammo'))+' | enemyHP '+yes(!!document.querySelector('.enemy-health-container'))+' | energy '+yes(!!document.querySelector('.ability-resource-bar'))+'\n'
   +'pickup '+yes(!!document.querySelector('.pickup-notifications-container'))+' | interaction '+yes(!!document.querySelector('.interaction-marker-container'))+' | threat '+yes(!!document.querySelector('.threat-indicators'))+
    (CDH.lastError?'\nERR '+CDH.lastError:'');
@@ -513,14 +578,14 @@ static const char kSuiteScript[] = R"JS(
 
   engine.addModelChangeListener(g_HUDMode,'m_iPlayerMode',function(){
    playerMode=g_HUDMode.m_iPlayerMode;recomputeActive();
-   if(active){updateHealth();updateCrosshair();scheduleRebind(0);}updateDiag();
+   if(active){updateHealth();updateCrosshair();updateCrosshairDot();scheduleRebind(0);}updateDiag();
   });
   engine.addModelChangeListener(g_HUDMode,'m_bIsHudVisible',function(){
    recomputeActive();updateDiag();
   });
   engine.on('onPlayerAimChanged',function(v){
    isAiming=!!v;
-   if(active)updateCrosshair();
+   if(active){updateCrosshair();updateCrosshairDot();}
    updateDiag();
   });
   if(window.g_missionPromptUIData){
@@ -681,6 +746,10 @@ static void load_config(WinApi& a){
     g_cfg.crosshairHideDelayMs=clamp_u32(a.GetPrivateProfileIntA("Crosshair","HideDelayMs",1000,ini),0,60000);
     g_cfg.crosshairFadeDurationMs=clamp_u32(a.GetPrivateProfileIntA("Crosshair","FadeDurationMs",300,ini),0,10000);
 
+    g_cfg.crosshairDotEnabled=a.GetPrivateProfileIntA("CrosshairDot","Enabled",1,ini)!=0;
+    g_cfg.crosshairDotHideDelayMs=clamp_u32(a.GetPrivateProfileIntA("CrosshairDot","HideDelayMs",0,ini),0,60000);
+    g_cfg.crosshairDotFadeDurationMs=clamp_u32(a.GetPrivateProfileIntA("CrosshairDot","FadeDurationMs",150,ini),0,10000);
+
     g_cfg.expeditionEnabled=a.GetPrivateProfileIntA("Expedition","Enabled",1,ini)!=0;
     g_cfg.expeditionHideDelayMs=clamp_u32(a.GetPrivateProfileIntA("Expedition","HideDelayMs",2000,ini),0,60000);
     g_cfg.expeditionFadeDurationMs=clamp_u32(a.GetPrivateProfileIntA("Expedition","FadeDurationMs",300,ini),0,10000);
@@ -714,6 +783,9 @@ static void build_config_script(){
     p=app(p,end,",crosshairEnabled:");p=app_u32(p,end,g_cfg.crosshairEnabled?1:0);
     p=app(p,end,",crosshairHideDelayMs:");p=app_u32(p,end,g_cfg.crosshairHideDelayMs);
     p=app(p,end,",crosshairFadeDurationMs:");p=app_u32(p,end,g_cfg.crosshairFadeDurationMs);
+    p=app(p,end,",crosshairDotEnabled:");p=app_u32(p,end,g_cfg.crosshairDotEnabled?1:0);
+    p=app(p,end,",crosshairDotHideDelayMs:");p=app_u32(p,end,g_cfg.crosshairDotHideDelayMs);
+    p=app(p,end,",crosshairDotFadeDurationMs:");p=app_u32(p,end,g_cfg.crosshairDotFadeDurationMs);
     p=app(p,end,",expeditionEnabled:");p=app_u32(p,end,g_cfg.expeditionEnabled?1:0);
     p=app(p,end,",expeditionHideDelayMs:");p=app_u32(p,end,g_cfg.expeditionHideDelayMs);
     p=app(p,end,",expeditionFadeDurationMs:");p=app_u32(p,end,g_cfg.expeditionFadeDurationMs);
@@ -924,14 +996,20 @@ static void native_hide_launch_reticles(void* hud,u64 now){
         const uptr offs[3]={0x88,0x120,0x1B8};
         for(int i=0;i<3;++i){
             uptr model=launch+offs[i];
+            u8* hasAim=(u8*)(model+0x40);
             u8* hidden=(u8*)(model+0x41);
-            if(*hidden==0){
+            s32* value=(s32*)(model+0x44);
+
+            bool visibleState=(*hasAim!=0)||(*hidden==0)||(*value>=0);
+            if(visibleState){
                 if(!g_multiLaunchReticleSinceMs[i])g_multiLaunchReticleSinceMs[i]=now;
                 u64 elapsed=now>=g_multiLaunchReticleSinceMs[i]?now-g_multiLaunchReticleSinceMs[i]:0;
                 if(elapsed>=g_cfg.multiLaunchHideDelayMs){
+                    *hasAim=0;
                     *hidden=1;
+                    *value=-1;
                     if(!g_multiLaunchReticleLogOnce){
-                        log_line("Multi Launch object indicators forced hidden through MultiLaunchIndicator.m_bIsReticuleHidden.");
+                        log_line("Multi Launch object indicators hard-hidden: HasAimTarget=0 ReticuleHidden=1 Value=-1.");
                         g_multiLaunchReticleLogOnce=true;
                     }
                 }
@@ -1162,7 +1240,7 @@ static bool install_hook(WinApi& api,uptr target){
     DWORD dummy=0;api.VirtualProtect((void*)target,stolen,old,&dummy);api.FlushInstructionCache((HANDLE)(uptr)-1,(void*)target,stolen);return true;
 }
 
-extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 111;}
+extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 112;}
 extern "C" __declspec(dllexport) void* CDH_RelocAnchor=(void*)&CDH_Version;
 
 extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
@@ -1174,7 +1252,7 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     load_config(api);g_showHudVk=parse_vk(g_cfg.showHudKey);build_config_script();
     g_WriteFile=api.WriteFile;g_log=api.CreateFileW(L"plugins\\ControlDynamicHUD.log",GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
     if(!g_log||(uptr)g_log==INVALID_HANDLE_VALUE_U)return 1;
-    log_line("Control Dynamic HUD V1.0L EXACT LAUNCH RETICLE + SAFE MENU TEST");log_line("Mode: exact Launch/MultiLaunch reticle-hidden fields + non-destructive menu hiding + native action guards");
+    log_line("Control Dynamic HUD V1.0M MENU COLLAPSE + HARD MULTILAUNCH + DOT TEST");log_line("Mode: collapsed safe menu + hard Multi Launch UI suppression + independent center-dot timer");
     log_cstr("Config: Enabled=");log_dec(g_cfg.enabled?1:0);log_cstr(" ShowHUDKey=");log_cstr(g_cfg.showHudKey);log_cstr(" VK=");log_hex(g_showHudVk);log_cstr(" ShowHUDDurationMs=");log_dec(g_cfg.showHudDurationMs);
     log_cstr(" HideNewGame=");log_dec(g_cfg.mainMenuHideNewGame?1:0);
     log_cstr(" HideMissionSelect=");log_dec(g_cfg.mainMenuHideMissionSelect?1:0);
