@@ -15,11 +15,11 @@ V0.9 fixed the core lifecycle problems:
 - persistent slot-28 lifecycle hook survives pause/menu page recreation;
 - no legacy per-frame reinjection storm.
 
-### V1.0D configurable test branch
+### V1.0E configurable test branch
 
 Branch: `dev/v1.0-configurable-hud`
 
-V1.0D adds configuration through `plugins/ControlDynamicHUD.ini`.
+V1.0E adds configuration through `plugins/ControlDynamicHUD.ini`.
 
 Currently configurable:
 
@@ -28,6 +28,7 @@ Currently configurable:
 - Crosshair
 - Expedition forced-modifier panel
 - Ground Slam targeting circle
+- Telekinesis input prompt
 - global **Show HUD** hotkey
 
 Every HUD element that the mod currently hides has its own configurable hide delay and fade duration.
@@ -128,6 +129,17 @@ FadeDurationMs=300
 HideTargetCircle=1
 ```
 
+### Telekinesis input prompt
+
+```ini
+[Telekinesis]
+HideInputPrompt=1
+HideDelayMs=0
+FadeDurationMs=150
+```
+
+This hides the keyboard/mouse/controller interaction prompt while Launch/telekinesis is active.
+
 All timing values are in milliseconds.
 
 ## Technical notes
@@ -148,7 +160,8 @@ The important current-build findings are:
 
 ## Roadmap
 
-- validate V1.0D real-aim crosshair behavior and Ground Slam circle suppression;
+- V1.0D real-aim crosshair behavior validated;
+- validate V1.0E telekinesis input-prompt suppression;
 - validate the hardened Expedition forced-modifier behavior;
 - add configurable behavior for additional HUD elements where safe;
 - optional in-game configuration overlay later;
