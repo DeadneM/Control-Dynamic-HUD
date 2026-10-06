@@ -68,14 +68,15 @@ static const char kSuiteScript[] = R"JS(
 (function(){
  if(window.__ControlDynamicHUDSuite)return;
  var CDH=window.__ControlDynamicHUDSuite={
-  version:'0.7',health:false,mission:false,crosshair:false,hudVisible:true,suspended:false
+  version:'0.8',health:false,mission:false,crosshair:false,
+  hudVisible:true,active:true,lastError:''
  };
  var MODE={COMBAT:0,ADVENTURING:1,STORY:2,ACTION:3,EXAMINE:4,HIDDEN:5};
- var playerMode=1,hudVisible=true;
+ var playerMode=1,hudVisible=true,active=true;
  var hp={bar:null,fill:null,obs:null,timer:0,shown:true};
  var mission={map:null,log:null,obs:null,timer:0,shown:true};
  var cross={el:null};
- var domObs=null,rebindQueued=false,resumeTimer=0,diagTimer=0;
+ var resumeTimer=0,heartbeat=0,diagTimer=0,rebindTimer=0;
 
  function addStyle(){
   if(document.getElementById('cdh-suite-style'))return;
@@ -91,21 +92,21 @@ static const char kSuiteScript[] = R"JS(
   +'.awesome-crosshair.cdh-hide{opacity:0;transition:opacity 300ms var(--easing);}'
   +'#cdh-diagnostic{position:absolute;left:18px;top:18px;z-index:2147483647;'
   +'font:15px monospace;color:white;background:rgba(0,0,0,.72);padding:10px 12px;'
-  +'pointer-events:none;white-space:pre;line-height:1.25;}';
+  +'pointer-events:none;white-space:pre;line-height:1.25;max-width:760px;}';
   (document.head||document.documentElement).appendChild(s);
  }
 
  function clearTimer(o){if(o.timer){clearTimeout(o.timer);o.timer=0;}}
- function disconnectObserver(o){
-  if(o.obs){o.obs.disconnect();o.obs=null;}
+ function disconnectObserver(o){if(o.obs){o.obs.disconnect();o.obs=null;}}
+ function setActive(v){
+  if(v===active)return;
+  active=v;CDH.active=v;
+  if(v)resumeHud();else suspendHud();
  }
- function stopDomObserver(){
-  if(domObs){domObs.disconnect();domObs=null;}
- }
- function trackedNodesMissing(){
-  return !hp.bar||!hp.fill||!hp.bar.isConnected||!hp.fill.isConnected
-      || !mission.map||!mission.log||!mission.map.isConnected||!mission.log.isConnected
-      || !cross.el||!cross.el.isConnected;
+ function recomputeActive(){
+  hudVisible=(g_HUDMode.m_bIsHudVisible!==false);
+  CDH.hudVisible=hudVisible;
+  setActive(hudVisible && playerMode!==MODE.HIDDEN);
  }
 
  function hpPercent(){
@@ -114,24 +115,26 @@ static const char kSuiteScript[] = R"JS(
   return ow?hp.fill.getBoundingClientRect().width/ow:1;
  }
  function setHpHidden(v){
-  if(!hudVisible||!hp.bar||!hp.bar.isConnected)return;
+  if(!active||!hp.bar||!hp.bar.isConnected)return;
   hp.bar.setAttribute('data-cdh-hidden',v?'1':'0');
   hp.shown=!v;
  }
  function updateHealth(){
-  if(!hudVisible)return;
-  if(!hp.bar||!hp.fill||!hp.bar.isConnected||!hp.fill.isConnected){queueRebind();return;}
+  if(!active)return;
+  if(!hp.bar||!hp.fill||!hp.bar.isConnected||!hp.fill.isConnected){
+   CDH.health=false;scheduleRebind(50);return;
+  }
   var should=(hpPercent()<1)||(playerMode===MODE.COMBAT);
   if(should){clearTimer(hp);if(!hp.shown)setHpHidden(false);}
   else if(hp.shown&&!hp.timer){
    hp.timer=setTimeout(function(){
     hp.timer=0;
-    if(hudVisible&&hp.bar&&hp.bar.isConnected)setHpHidden(true);
+    if(active&&hp.bar&&hp.bar.isConnected)setHpHidden(true);
    },2000);
   }
  }
  function bindHealth(){
-  if(!hudVisible)return false;
+  if(!active)return false;
   if(window.g_runtimeInterfaceOptions&&g_runtimeInterfaceOptions.m_bPlayerStatsEnabled===false)return false;
   var b=document.querySelector('.health-bar'),f=document.querySelector('.health-bar__fill');
   if(!b||!f){CDH.health=false;return false;}
@@ -145,28 +148,30 @@ static const char kSuiteScript[] = R"JS(
  }
 
  function missionHide(ms){
-  if(!hudVisible||!mission.log)return;
+  if(!active||!mission.log)return;
   clearTimer(mission);
   mission.timer=setTimeout(function(){
    mission.timer=0;
-   if(!hudVisible)return;
+   if(!active)return;
    mission.shown=false;
    if(mission.log&&mission.log.isConnected)mission.log.classList.add('cdh-hide');
   },ms);
  }
  function missionShow(){
-  if(!hudVisible||!mission.log||!mission.log.isConnected)return;
+  if(!active||!mission.log||!mission.log.isConnected)return;
   clearTimer(mission);mission.shown=true;mission.log.classList.remove('cdh-hide');
  }
  function onMapChanged(){
-  if(!hudVisible)return;
-  if(!mission.map||!mission.log||!mission.map.isConnected||!mission.log.isConnected){queueRebind();return;}
+  if(!active)return;
+  if(!mission.map||!mission.log||!mission.map.isConnected||!mission.log.isConnected){
+   CDH.mission=false;scheduleRebind(50);return;
+  }
   var inMap=mission.map.classList.contains('map--show');
   mission.log.classList.toggle('cdh-in-map',inMap);
   if(inMap)missionShow();else if(mission.shown)missionHide(3000);
  }
  function bindMission(){
-  if(!hudVisible)return false;
+  if(!active)return false;
   if(window.g_runtimeInterfaceOptions&&g_runtimeInterfaceOptions.m_bMissionHUDEnabled===false)return false;
   var m=document.querySelector('.map-overlay'),l=document.querySelector('.mission-log-wrapper');
   if(!m||!l){CDH.mission=false;return false;}
@@ -183,62 +188,68 @@ static const char kSuiteScript[] = R"JS(
  }
 
  function updateCrosshair(){
-  if(!hudVisible)return;
-  if(!cross.el||!cross.el.isConnected){queueRebind();return;}
+  if(!active)return;
+  if(!cross.el||!cross.el.isConnected){CDH.crosshair=false;scheduleRebind(100);return;}
   cross.el.classList.toggle('cdh-hide',playerMode===MODE.ADVENTURING);
  }
  function bindCrosshair(){
-  if(!hudVisible)return false;
+  if(!active)return false;
   var e=document.querySelector('.awesome-crosshair');
-  if(!e){CDH.crosshair=false;return false;}
+  if(!e){cross.el=null;CDH.crosshair=false;return false;}
   cross.el=e;CDH.crosshair=true;updateCrosshair();return true;
  }
 
  function rebind(){
-  rebindQueued=false;
-  if(!hudVisible)return;
+  rebindTimer=0;
+  if(!active)return;
   addStyle();
   bindHealth();bindMission();bindCrosshair();updateDiag();
  }
- function queueRebind(){
-  if(!hudVisible||rebindQueued)return;
-  rebindQueued=true;
-  setTimeout(rebind,0);
+ function scheduleRebind(ms){
+  if(!active||rebindTimer)return;
+  rebindTimer=setTimeout(rebind,ms||0);
  }
- function startDomObserver(){
-  if(!hudVisible||domObs||!document.documentElement)return;
-  domObs=new MutationObserver(function(){
-   if(!hudVisible)return;
-   if(trackedNodesMissing())queueRebind();
-  });
-  domObs.observe(document.documentElement,{childList:true,subtree:true});
+ function rebindBurst(){
+  if(!active)return;
+  var delays=[0,100,250,500,1000];
+  for(var i=0;i<delays.length;i++){
+   (function(d){setTimeout(function(){if(active)rebind();},d);})(delays[i]);
+  }
  }
 
  function suspendHud(){
-  hudVisible=false;CDH.hudVisible=false;CDH.suspended=true;
   if(resumeTimer){clearTimeout(resumeTimer);resumeTimer=0;}
-  rebindQueued=false;
+  if(rebindTimer){clearTimeout(rebindTimer);rebindTimer=0;}
   clearTimer(hp);clearTimer(mission);
-  disconnectObserver(hp);disconnectObserver(mission);stopDomObserver();
+  disconnectObserver(hp);disconnectObserver(mission);
+  hp.bar=null;hp.fill=null;mission.map=null;mission.log=null;cross.el=null;
+  CDH.health=false;CDH.mission=false;CDH.crosshair=false;
   updateDiag();
  }
  function resumeHud(){
-  hudVisible=true;CDH.hudVisible=true;CDH.suspended=false;
   if(resumeTimer)clearTimeout(resumeTimer);
   resumeTimer=setTimeout(function(){
    resumeTimer=0;
-   if(!hudVisible)return;
-   hp.bar=null;hp.fill=null;mission.map=null;mission.log=null;cross.el=null;
-   rebind();startDomObserver();
-  },100);
+   if(!active)return;
+   rebindBurst();
+  },150);
+ }
+
+ function heartbeatTick(){
+  if(!active)return;
+  var needs=
+   !hp.bar||!hp.fill||!hp.bar.isConnected||!hp.fill.isConnected||
+   !mission.map||!mission.log||!mission.map.isConnected||!mission.log.isConnected||
+   !cross.el||!cross.el.isConnected;
+  if(needs)scheduleRebind(0);
  }
 
  function yes(v){return v?'YES':'no';}
  function updateDiag(){
   var p=document.getElementById('cdh-diagnostic');if(!p)return;
   p.textContent=
-   'Control Dynamic HUD v0.7 menu-safe suite\n'
-  +'HUD visible '+yes(hudVisible)+' | suspended '+yes(CDH.suspended)+'\n'
+   'Control Dynamic HUD v0.8 bounded-lifecycle suite\n'
+  +'HUD '+yes(hudVisible)+' | active '+yes(active)+' | playerMode '+playerMode+'\n'
   +'engine '+yes(!!window.engine)+' | HUDMode '+yes(!!window.g_HUDMode)+' | missionModel '+yes(!!window.g_missionPromptUIData)+'\n'
   +'health '+yes(!!document.querySelector('.health-bar'))+' / fill '+yes(!!document.querySelector('.health-bar__fill'))+'\n'
   +'mission '+yes(!!document.querySelector('.mission-log-wrapper'))+' / map '+yes(!!document.querySelector('.map-overlay'))+'\n'
@@ -246,7 +257,8 @@ static const char kSuiteScript[] = R"JS(
   +'enemyHP '+yes(!!document.querySelector('.enemy-health-container'))+' / energy '+yes(!!document.querySelector('.ability-resource-bar'))+'\n'
   +'source '+yes(!!document.querySelector('.essence-collector--hud'))+' / pickup '+yes(!!document.querySelector('.pickup-notifications-container'))+'\n'
   +'interaction '+yes(!!document.querySelector('.interaction-marker-container'))+' / threat '+yes(!!document.querySelector('.threat-indicators'))+'\n'
-  +'expedition '+yes(!!document.querySelector('.expedition-hud > .expedition-mod-group'));
+  +'expedition '+yes(!!document.querySelector('.expedition-hud > .expedition-mod-group'))+
+   (CDH.lastError?'\nERR '+CDH.lastError:'');
  }
  function startDiag(){
   if(document.getElementById('cdh-diagnostic'))return;
@@ -254,10 +266,19 @@ static const char kSuiteScript[] = R"JS(
   (document.body||document.documentElement).appendChild(p);updateDiag();
   var n=0;diagTimer=setInterval(function(){
    updateDiag();
-   if(++n>=30){clearInterval(diagTimer);diagTimer=0;}
+   if(++n>=40){clearInterval(diagTimer);diagTimer=0;}
   },500);
-  setTimeout(function(){var x=document.getElementById('cdh-diagnostic');if(x)x.remove();},18000);
+  setTimeout(function(){var x=document.getElementById('cdh-diagnostic');if(x)x.remove();},22000);
  }
+
+ window.addEventListener('error',function(e){
+  CDH.lastError=(e&&e.message)?String(e.message):'window error';
+  updateDiag();
+ });
+ window.addEventListener('unhandledrejection',function(e){
+  CDH.lastError='promise: '+String(e&&e.reason?e.reason:'unknown');
+  updateDiag();
+ });
 
  var attempts=0;
  function boot(){
@@ -267,26 +288,28 @@ static const char kSuiteScript[] = R"JS(
   }
   playerMode=g_HUDMode.m_iPlayerMode;
   hudVisible=(g_HUDMode.m_bIsHudVisible!==false);
-  CDH.hudVisible=hudVisible;CDH.suspended=!hudVisible;
+  active=hudVisible && playerMode!==MODE.HIDDEN;
+  CDH.hudVisible=hudVisible;CDH.active=active;
 
   engine.addModelChangeListener(g_HUDMode,'m_iPlayerMode',function(){
    playerMode=g_HUDMode.m_iPlayerMode;
-   if(hudVisible){updateHealth();updateCrosshair();updateDiag();}
+   recomputeActive();
+   if(active){updateHealth();updateCrosshair();scheduleRebind(0);}
+   updateDiag();
   });
   engine.addModelChangeListener(g_HUDMode,'m_bIsHudVisible',function(){
-   var v=(g_HUDMode.m_bIsHudVisible!==false);
-   if(v===hudVisible)return;
-   if(v)resumeHud();else suspendHud();
+   recomputeActive();updateDiag();
   });
   if(window.g_missionPromptUIData){
    engine.addModelChangeListener(g_missionPromptUIData,'m_missionUIData',function(){
-    if(hudVisible&&mission.log){missionShow();missionHide(7000);}
+    if(active&&mission.log){missionShow();missionHide(7000);}
     updateDiag();
    });
   }
 
   startDiag();
-  if(hudVisible){rebind();startDomObserver();}
+  heartbeat=setInterval(heartbeatTick,1000);
+  if(active)rebindBurst();
  }
  boot();
 })();
@@ -493,7 +516,7 @@ static bool install_hook(WinApi& api,uptr target){
     DWORD dummy=0;api.VirtualProtect((void*)target,stolen,old,&dummy);api.FlushInstructionCache((HANDLE)(uptr)-1,(void*)target,stolen);return true;
 }
 
-extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 70;}
+extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 80;}
 extern "C" __declspec(dllexport) void* CDH_RelocAnchor=(void*)&CDH_Version;
 
 extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
@@ -502,7 +525,7 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     g_FlushInstructionCache=api.FlushInstructionCache;
     g_WriteFile=api.WriteFile;g_log=api.CreateFileW(L"plugins\\ControlDynamicHUD.log",GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
     if(!g_log||(uptr)g_log==INVALID_HANDLE_VALUE_U)return 1;
-    log_line("Control Dynamic HUD V0.7 MENU-SAFE CUMULATIVE SUITE");log_line("Mode: menu-safe HUD visibility lifecycle + health + mission + crosshair + selector diagnostics");
+    log_line("Control Dynamic HUD V0.8 BOUNDED-LIFECYCLE CUMULATIVE SUITE");log_line("Mode: no global DOM observer + bounded rebind + health + mission + crosshair + selector diagnostics");
     log_cstr("Executable: ");log_wide(first_module_name());log_bytes("\r\n",2);void* exe=first_module_base();log_cstr("Executable base: ");log_hex((uptr)exe);log_bytes("\r\n",2);
     void* coh=find_module("coherentuigt.dll");g_coherentBase=coh;log_cstr("CoherentUIGT.dll: ");if(coh){log_hex((uptr)coh);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
     void* ui=find_module("ui_rmdwin10_f.dll");log_cstr("ui_rmdwin10_f.dll: ");if(ui){log_hex((uptr)ui);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
