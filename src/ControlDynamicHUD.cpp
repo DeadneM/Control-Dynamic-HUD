@@ -20,6 +20,8 @@ using LPCWSTR = const wchar_t*;
 #define WINAPI __attribute__((ms_abi))
 #define DLL_PROCESS_ATTACH 1
 
+extern "C" int _fltused = 0;
+
 static constexpr DWORD GENERIC_WRITE = 0x40000000u;
 static constexpr DWORD FILE_SHARE_READ = 0x1u;
 static constexpr DWORD FILE_SHARE_WRITE = 0x2u;
