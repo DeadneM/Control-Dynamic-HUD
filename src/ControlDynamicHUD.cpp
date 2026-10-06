@@ -68,7 +68,7 @@ static const char kSuiteScript[] = R"JS(
 (function(){
  if(window.__ControlDynamicHUDSuite)return;
  var CDH=window.__ControlDynamicHUDSuite={
-  version:'0.8',health:false,mission:false,crosshair:false,
+  version:'0.9',health:false,mission:false,crosshair:false,
   hudVisible:true,active:true,lastError:''
  };
  var MODE={COMBAT:0,ADVENTURING:1,STORY:2,ACTION:3,EXAMINE:4,HIDDEN:5};
@@ -248,7 +248,7 @@ static const char kSuiteScript[] = R"JS(
  function updateDiag(){
   var p=document.getElementById('cdh-diagnostic');if(!p)return;
   p.textContent=
-   'Control Dynamic HUD v0.8 bounded-lifecycle suite\n'
+   'Control Dynamic HUD v0.9 persistent-lifecycle suite\n'
   +'HUD '+yes(hudVisible)+' | active '+yes(active)+' | playerMode '+playerMode+'\n'
   +'engine '+yes(!!window.engine)+' | HUDMode '+yes(!!window.g_HUDMode)+' | missionModel '+yes(!!window.g_missionPromptUIData)+'\n'
   +'health '+yes(!!document.querySelector('.health-bar'))+' / fill '+yes(!!document.querySelector('.health-bar__fill'))+'\n'
@@ -440,27 +440,27 @@ static void WINAPI HookReady(void* self){
     log_cstr(" ExecuteScript=");log_hex(execute);
     log_bytes("\r\n",2);
 
-    // Restore first so ExecuteScript cannot re-enter through our temporary page hook.
-    restore_ready_hook();
-
     if(!view||!viewPage||!viewVtable||!execute){
-        log_line("FAIL-OPEN: ready callback did not expose an injectable View.");
+        log_line("FAIL-OPEN: ready callback did not expose an injectable View; restoring lifecycle hook.");
+        restore_ready_hook();
         return;
     }
     if(viewVtable!=expectedVtable){
         log_cstr("FAIL-OPEN: public View vtable mismatch; expected ");log_hex(expectedVtable);
         log_cstr(" got ");log_hex(viewVtable);log_bytes("\r\n",2);
+        restore_ready_hook();
         return;
     }
     if(execute!=expected){
         log_cstr("FAIL-OPEN: public View vtable[61] mismatch; expected ");log_hex(expected);
         log_cstr(" got ");log_hex(execute);log_bytes("\r\n",2);
+        restore_ready_hook();
         return;
     }
 
-    log_line("Calling View::ExecuteScript through vtable[61].");
+    log_line("Calling View::ExecuteScript through vtable[61] for this HUD binding context.");
     ((ExecuteScriptFn)execute)(view,kSuiteScript,nullptr);
-    log_line("Cumulative HUD suite injected successfully.");
+    log_line("Cumulative HUD suite injected for current binding context; slot-28 hook remains active.");
 }
 
 static bool install_ready_hook(void* hud){
@@ -485,7 +485,7 @@ static bool install_ready_hook(void* hud){
     DWORD dummy=0;
     g_VirtualProtect((void*)entry,sizeof(uptr),old,&dummy);
     if(g_FlushInstructionCache) g_FlushInstructionCache((HANDLE)(uptr)-1,(void*)entry,sizeof(uptr));
-    log_line("One-shot onReadyForBindings hook installed.");
+    log_line("Persistent onReadyForBindings lifecycle hook installed.");
     return true;
 }
 
@@ -500,7 +500,7 @@ static void* WINAPI HookFactory(void* a,void* b,void* c,void* d){
         u32 pageIndex=rd32((u8*)r+0x18);
         log_cstr("HUD vtable: ");log_hex(vtbl);log_bytes("\r\n",2);
         log_cstr("Initial HUD System*: ");log_hex((uptr)system);log_cstr(" pageIndex=");log_dec(pageIndex);log_bytes("\r\n",2);
-        if(!g_readyEntry && !install_ready_hook(r)) log_line("FAIL-OPEN: could not install one-shot ready hook.");
+        if(!g_readyEntry && !install_ready_hook(r)) log_line("FAIL-OPEN: could not install persistent ready hook.");
     }
     return r;
 }
@@ -516,7 +516,7 @@ static bool install_hook(WinApi& api,uptr target){
     DWORD dummy=0;api.VirtualProtect((void*)target,stolen,old,&dummy);api.FlushInstructionCache((HANDLE)(uptr)-1,(void*)target,stolen);return true;
 }
 
-extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 80;}
+extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 90;}
 extern "C" __declspec(dllexport) void* CDH_RelocAnchor=(void*)&CDH_Version;
 
 extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
@@ -525,7 +525,7 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     g_FlushInstructionCache=api.FlushInstructionCache;
     g_WriteFile=api.WriteFile;g_log=api.CreateFileW(L"plugins\\ControlDynamicHUD.log",GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
     if(!g_log||(uptr)g_log==INVALID_HANDLE_VALUE_U)return 1;
-    log_line("Control Dynamic HUD V0.8 BOUNDED-LIFECYCLE CUMULATIVE SUITE");log_line("Mode: no global DOM observer + bounded rebind + health + mission + crosshair + selector diagnostics");
+    log_line("Control Dynamic HUD V0.9 PERSISTENT HUD LIFECYCLE SUITE");log_line("Mode: persistent slot-28 reinjection + bounded rebind + health + mission + crosshair + selector diagnostics");
     log_cstr("Executable: ");log_wide(first_module_name());log_bytes("\r\n",2);void* exe=first_module_base();log_cstr("Executable base: ");log_hex((uptr)exe);log_bytes("\r\n",2);
     void* coh=find_module("coherentuigt.dll");g_coherentBase=coh;log_cstr("CoherentUIGT.dll: ");if(coh){log_hex((uptr)coh);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
     void* ui=find_module("ui_rmdwin10_f.dll");log_cstr("ui_rmdwin10_f.dll: ");if(ui){log_hex((uptr)ui);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
