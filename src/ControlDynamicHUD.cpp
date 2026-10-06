@@ -40,7 +40,8 @@ using FnVirtualAlloc = LPVOID (WINAPI*)(LPVOID,usize,DWORD,DWORD);
 using FnVirtualProtect = BOOL (WINAPI*)(LPVOID,usize,DWORD,DWORD*);
 using FnFlushInstructionCache = BOOL (WINAPI*)(HANDLE,LPCVOID,usize);
 
-typedef void* (WINAPI *FactoryFn)(void*, void*, void*, void*);\ntypedef void* (WINAPI *GetNativeViewFn)(void*, u32);
+typedef void* (WINAPI *FactoryFn)(void*, void*, void*, void*);
+typedef void* (WINAPI *GetNativeViewFn)(void*, u32);
 
 static HANDLE g_log = nullptr;
 static FnWriteFile g_WriteFile = nullptr;
