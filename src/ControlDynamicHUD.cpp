@@ -39,6 +39,8 @@ using FnCloseHandle = BOOL (WINAPI*)(HANDLE);
 using FnVirtualAlloc = LPVOID (WINAPI*)(LPVOID,usize,DWORD,DWORD);
 using FnVirtualProtect = BOOL (WINAPI*)(LPVOID,usize,DWORD,DWORD*);
 using FnFlushInstructionCache = BOOL (WINAPI*)(HANDLE,LPCVOID,usize);
+using FnGetPrivateProfileIntA = u32 (WINAPI*)(const char*,const char*,s32,const char*);
+using FnGetPrivateProfileStringA = DWORD (WINAPI*)(const char*,const char*,const char*,char*,DWORD,const char*);
 
 typedef void* (WINAPI *FactoryFn)(void*, void*, void*, void*);
 typedef void* (WINAPI *PageGetViewFn)(void*);
@@ -57,6 +59,37 @@ static FnFlushInstructionCache g_FlushInstructionCache = nullptr;
 static volatile u32 g_factoryCalls = 0;
 static volatile u32 g_readyCalls = 0;
 
+struct Config {
+    bool enabled;
+    bool diagnostics;
+    char showHudKey[16];
+    u32 showHudDurationMs;
+
+    bool healthEnabled;
+    u32 healthHideDelayMs;
+    u32 healthFadeDurationMs;
+    u32 healthOpacityPercent;
+    bool healthShowDuringCombat;
+    u32 healthThresholdPercent;
+
+    bool missionEnabled;
+    u32 missionInitialHideDelayMs;
+    u32 missionAfterMapCloseHideDelayMs;
+    u32 missionUpdateVisibleMs;
+    u32 missionFadeDurationMs;
+    bool missionShowInMap;
+
+    bool crosshairEnabled;
+    u32 crosshairHideDelayMs;
+    u32 crosshairFadeDurationMs;
+
+    bool expeditionEnabled;
+    u32 expeditionHideDelayMs;
+    u32 expeditionFadeDurationMs;
+};
+static Config g_cfg{};
+static char g_configScript[2048];
+
 static constexpr u32 kCoherentTimeDateStamp = 0x5E8F6E9A;
 static constexpr u32 kCoherentSizeOfImage = 0x329000;
 static constexpr u32 kCoherentCheckSum = 0x00323A4A;
@@ -67,29 +100,40 @@ static constexpr uptr kViewPageOffset = 0xA8;
 static const char kSuiteScript[] = R"JS(
 (function(){
  if(window.__ControlDynamicHUDSuite)return;
+ var CFG=window.__CDH_NATIVE_CONFIG||{
+  diagnostics:0,showHudKey:'F1',showHudDurationMs:5000,
+  healthEnabled:1,healthHideDelayMs:2000,healthFadeDurationMs:300,healthOpacityPercent:80,healthShowDuringCombat:1,healthThresholdPercent:100,
+  missionEnabled:1,missionInitialHideDelayMs:2000,missionAfterMapCloseHideDelayMs:3000,missionUpdateVisibleMs:7000,missionFadeDurationMs:300,missionShowInMap:1,
+  crosshairEnabled:1,crosshairHideDelayMs:1000,crosshairFadeDurationMs:300,
+  expeditionEnabled:1,expeditionHideDelayMs:2000,expeditionFadeDurationMs:300
+ };
  var CDH=window.__ControlDynamicHUDSuite={
-  version:'0.9',health:false,mission:false,crosshair:false,
-  hudVisible:true,active:true,lastError:''
+  version:'1.0A',health:false,mission:false,crosshair:false,expedition:false,
+  hudVisible:true,active:true,lastError:'',forceVisible:false
  };
  var MODE={COMBAT:0,ADVENTURING:1,STORY:2,ACTION:3,EXAMINE:4,HIDDEN:5};
  var playerMode=1,hudVisible=true,active=true;
  var hp={bar:null,fill:null,obs:null,timer:0,shown:true};
  var mission={map:null,log:null,obs:null,timer:0,shown:true};
- var cross={el:null};
- var resumeTimer=0,heartbeat=0,diagTimer=0,rebindTimer=0;
+ var cross={el:null,timer:0,shown:true};
+ var expedition={el:null,obs:null,timer:0,shown:true};
+ var resumeTimer=0,heartbeat=0,diagTimer=0,rebindTimer=0,forceTimer=0,forceUntil=0;
 
+ function isForced(){return forceUntil>Date.now();}
  function addStyle(){
   if(document.getElementById('cdh-suite-style'))return;
   var s=document.createElement('style');s.id='cdh-suite-style';
   s.textContent=
-   '.health-bar:not(.health-bar--hidden){transition:opacity 300ms var(--easing);}'
-  +'.health-bar[data-cdh-hidden="0"]:not(.health-bar--hidden){opacity:.8;}'
+   '.health-bar:not(.health-bar--hidden){transition:opacity '+CFG.healthFadeDurationMs+'ms var(--easing);}'
+  +'.health-bar[data-cdh-hidden="0"]:not(.health-bar--hidden){opacity:'+(CFG.healthOpacityPercent/100)+';}'
   +'.health-bar[data-cdh-hidden="1"]:not(.health-bar--hidden){opacity:0;}'
   +'.health-bar--hidden{opacity:0!important;}'
-  +'.mission-log-wrapper{transition:opacity 300ms var(--easing);}'
+  +'.mission-log-wrapper{transition:opacity '+CFG.missionFadeDurationMs+'ms var(--easing);}'
   +'.mission-log-wrapper.cdh-hide{opacity:0;}'
   +'.mission-log-wrapper.cdh-in-map{opacity:1!important;}'
-  +'.awesome-crosshair.cdh-hide{opacity:0;transition:opacity 300ms var(--easing);}'
+  +'.awesome-crosshair.cdh-hide{opacity:0;transition:opacity '+CFG.crosshairFadeDurationMs+'ms var(--easing);}'
+  +'.expedition-hud>.expedition-mod-group{transition:opacity '+CFG.expeditionFadeDurationMs+'ms var(--easing);}'
+  +'.expedition-hud>.expedition-mod-group.cdh-hide{opacity:0!important;}'
   +'#cdh-diagnostic{position:absolute;left:18px;top:18px;z-index:2147483647;'
   +'font:15px monospace;color:white;background:rgba(0,0,0,.72);padding:10px 12px;'
   +'pointer-events:none;white-space:pre;line-height:1.25;max-width:760px;}';
@@ -106,7 +150,7 @@ static const char kSuiteScript[] = R"JS(
  function recomputeActive(){
   hudVisible=(g_HUDMode.m_bIsHudVisible!==false);
   CDH.hudVisible=hudVisible;
-  setActive(hudVisible && playerMode!==MODE.HIDDEN);
+  setActive(hudVisible&&playerMode!==MODE.HIDDEN);
  }
 
  function hpPercent(){
@@ -116,25 +160,26 @@ static const char kSuiteScript[] = R"JS(
  }
  function setHpHidden(v){
   if(!active||!hp.bar||!hp.bar.isConnected)return;
-  hp.bar.setAttribute('data-cdh-hidden',v?'1':'0');
-  hp.shown=!v;
+  hp.bar.setAttribute('data-cdh-hidden',v?'1':'0');hp.shown=!v;
  }
  function updateHealth(){
-  if(!active)return;
+  if(!active||!CFG.healthEnabled)return;
   if(!hp.bar||!hp.fill||!hp.bar.isConnected||!hp.fill.isConnected){
    CDH.health=false;scheduleRebind(50);return;
   }
-  var should=(hpPercent()<1)||(playerMode===MODE.COMBAT);
+  if(isForced()){clearTimer(hp);setHpHidden(false);return;}
+  var threshold=CFG.healthThresholdPercent/100;
+  var should=(hpPercent()<threshold)||(CFG.healthShowDuringCombat&&playerMode===MODE.COMBAT);
   if(should){clearTimer(hp);if(!hp.shown)setHpHidden(false);}
   else if(hp.shown&&!hp.timer){
    hp.timer=setTimeout(function(){
     hp.timer=0;
-    if(active&&hp.bar&&hp.bar.isConnected)setHpHidden(true);
-   },2000);
+    if(active&&!isForced()&&hp.bar&&hp.bar.isConnected)setHpHidden(true);
+   },CFG.healthHideDelayMs);
   }
  }
  function bindHealth(){
-  if(!active)return false;
+  if(!active||!CFG.healthEnabled)return false;
   if(window.g_runtimeInterfaceOptions&&g_runtimeInterfaceOptions.m_bPlayerStatsEnabled===false)return false;
   var b=document.querySelector('.health-bar'),f=document.querySelector('.health-bar__fill');
   if(!b||!f){CDH.health=false;return false;}
@@ -148,11 +193,12 @@ static const char kSuiteScript[] = R"JS(
  }
 
  function missionHide(ms){
-  if(!active||!mission.log)return;
+  if(!active||!CFG.missionEnabled||!mission.log)return;
   clearTimer(mission);
+  if(isForced()){missionShow();return;}
   mission.timer=setTimeout(function(){
    mission.timer=0;
-   if(!active)return;
+   if(!active||isForced())return;
    mission.shown=false;
    if(mission.log&&mission.log.isConnected)mission.log.classList.add('cdh-hide');
   },ms);
@@ -162,16 +208,18 @@ static const char kSuiteScript[] = R"JS(
   clearTimer(mission);mission.shown=true;mission.log.classList.remove('cdh-hide');
  }
  function onMapChanged(){
-  if(!active)return;
+  if(!active||!CFG.missionEnabled)return;
   if(!mission.map||!mission.log||!mission.map.isConnected||!mission.log.isConnected){
    CDH.mission=false;scheduleRebind(50);return;
   }
+  if(isForced()){missionShow();return;}
   var inMap=mission.map.classList.contains('map--show');
-  mission.log.classList.toggle('cdh-in-map',inMap);
-  if(inMap)missionShow();else if(mission.shown)missionHide(3000);
+  mission.log.classList.toggle('cdh-in-map',CFG.missionShowInMap&&inMap);
+  if(CFG.missionShowInMap&&inMap)missionShow();
+  else if(mission.shown)missionHide(CFG.missionAfterMapCloseHideDelayMs);
  }
  function bindMission(){
-  if(!active)return false;
+  if(!active||!CFG.missionEnabled)return false;
   if(window.g_runtimeInterfaceOptions&&g_runtimeInterfaceOptions.m_bMissionHUDEnabled===false)return false;
   var m=document.querySelector('.map-overlay'),l=document.querySelector('.mission-log-wrapper');
   if(!m||!l){CDH.mission=false;return false;}
@@ -183,27 +231,70 @@ static const char kSuiteScript[] = R"JS(
    mission.obs.observe(m,{attributes:true,attributeFilter:['class']});
   }
   CDH.mission=true;onMapChanged();
-  if(!m.classList.contains('map--show'))missionHide(2000);
+  if(!isForced()&&!m.classList.contains('map--show'))missionHide(CFG.missionInitialHideDelayMs);
   return true;
  }
 
+ function setCrossHidden(v){
+  if(!cross.el||!cross.el.isConnected)return;
+  cross.el.classList.toggle('cdh-hide',v);cross.shown=!v;
+ }
  function updateCrosshair(){
-  if(!active)return;
+  if(!active||!CFG.crosshairEnabled)return;
   if(!cross.el||!cross.el.isConnected){CDH.crosshair=false;scheduleRebind(100);return;}
-  cross.el.classList.toggle('cdh-hide',playerMode===MODE.ADVENTURING);
+  if(isForced()){clearTimer(cross);setCrossHidden(false);return;}
+  var shouldHide=playerMode===MODE.ADVENTURING;
+  if(!shouldHide){clearTimer(cross);setCrossHidden(false);}
+  else if(cross.shown&&!cross.timer){
+   cross.timer=setTimeout(function(){
+    cross.timer=0;
+    if(active&&!isForced())setCrossHidden(true);
+   },CFG.crosshairHideDelayMs);
+  }
  }
  function bindCrosshair(){
-  if(!active)return false;
+  if(!active||!CFG.crosshairEnabled)return false;
   var e=document.querySelector('.awesome-crosshair');
   if(!e){cross.el=null;CDH.crosshair=false;return false;}
-  cross.el=e;CDH.crosshair=true;updateCrosshair();return true;
+  cross.el=e;cross.shown=!e.classList.contains('cdh-hide');CDH.crosshair=true;updateCrosshair();return true;
+ }
+
+ function setExpeditionHidden(v){
+  if(!expedition.el||!expedition.el.isConnected)return;
+  expedition.el.classList.toggle('cdh-hide',v);expedition.shown=!v;
+ }
+ function scheduleExpeditionHide(){
+  if(!active||!CFG.expeditionEnabled||!expedition.el)return;
+  clearTimer(expedition);
+  if(isForced()){setExpeditionHidden(false);return;}
+  expedition.timer=setTimeout(function(){
+   expedition.timer=0;
+   if(active&&!isForced())setExpeditionHidden(true);
+  },CFG.expeditionHideDelayMs);
+ }
+ function onExpeditionChanged(){
+  if(!active||!CFG.expeditionEnabled)return;
+  if(!expedition.el||!expedition.el.isConnected){CDH.expedition=false;scheduleRebind(100);return;}
+  setExpeditionHidden(false);scheduleExpeditionHide();
+ }
+ function bindExpedition(){
+  if(!active||!CFG.expeditionEnabled)return false;
+  var e=document.querySelector('.expedition-hud > .expedition-mod-group');
+  if(!e){expedition.el=null;CDH.expedition=false;return false;}
+  if(e!==expedition.el||!expedition.obs){
+   clearTimer(expedition);disconnectObserver(expedition);
+   expedition.el=e;expedition.shown=true;
+   expedition.obs=new MutationObserver(onExpeditionChanged);
+   expedition.obs.observe(e,{childList:true,subtree:true,characterData:true});
+  }
+  CDH.expedition=true;setExpeditionHidden(false);scheduleExpeditionHide();return true;
  }
 
  function rebind(){
   rebindTimer=0;
   if(!active)return;
   addStyle();
-  bindHealth();bindMission();bindCrosshair();updateDiag();
+  bindHealth();bindMission();bindCrosshair();bindExpedition();updateDiag();
  }
  function scheduleRebind(ms){
   if(!active||rebindTimer)return;
@@ -220,10 +311,10 @@ static const char kSuiteScript[] = R"JS(
  function suspendHud(){
   if(resumeTimer){clearTimeout(resumeTimer);resumeTimer=0;}
   if(rebindTimer){clearTimeout(rebindTimer);rebindTimer=0;}
-  clearTimer(hp);clearTimer(mission);
-  disconnectObserver(hp);disconnectObserver(mission);
-  hp.bar=null;hp.fill=null;mission.map=null;mission.log=null;cross.el=null;
-  CDH.health=false;CDH.mission=false;CDH.crosshair=false;
+  clearTimer(hp);clearTimer(mission);clearTimer(cross);clearTimer(expedition);
+  disconnectObserver(hp);disconnectObserver(mission);disconnectObserver(expedition);
+  hp.bar=null;hp.fill=null;mission.map=null;mission.log=null;cross.el=null;expedition.el=null;
+  CDH.health=false;CDH.mission=false;CDH.crosshair=false;CDH.expedition=false;
   updateDiag();
  }
  function resumeHud(){
@@ -238,46 +329,57 @@ static const char kSuiteScript[] = R"JS(
  function heartbeatTick(){
   if(!active)return;
   var needs=
-   !hp.bar||!hp.fill||!hp.bar.isConnected||!hp.fill.isConnected||
-   !mission.map||!mission.log||!mission.map.isConnected||!mission.log.isConnected||
-   !cross.el||!cross.el.isConnected;
+   (CFG.healthEnabled&&(!hp.bar||!hp.fill||!hp.bar.isConnected||!hp.fill.isConnected))||
+   (CFG.missionEnabled&&(!mission.map||!mission.log||!mission.map.isConnected||!mission.log.isConnected))||
+   (CFG.crosshairEnabled&&(!cross.el||!cross.el.isConnected))||
+   (CFG.expeditionEnabled&&(!expedition.el||!expedition.el.isConnected));
   if(needs)scheduleRebind(0);
+ }
+
+ function forceShowHUD(){
+  if(!active)return;
+  forceUntil=Date.now()+CFG.showHudDurationMs;CDH.forceVisible=true;
+  clearTimer(hp);clearTimer(mission);clearTimer(cross);clearTimer(expedition);
+  if(hp.bar)setHpHidden(false);
+  if(mission.log)missionShow();
+  if(cross.el)setCrossHidden(false);
+  if(expedition.el)setExpeditionHidden(false);
+  if(forceTimer)clearTimeout(forceTimer);
+  forceTimer=setTimeout(function(){
+   forceTimer=0;forceUntil=0;CDH.forceVisible=false;
+   if(!active)return;
+   updateHealth();onMapChanged();updateCrosshair();scheduleExpeditionHide();
+  },CFG.showHudDurationMs);
+  updateDiag();
+ }
+ function keyMatches(e){
+  var want=String(CFG.showHudKey||'F1').toUpperCase();
+  return String(e.key||'').toUpperCase()===want||String(e.code||'').toUpperCase()===want;
  }
 
  function yes(v){return v?'YES':'no';}
  function updateDiag(){
+  if(!CFG.diagnostics)return;
   var p=document.getElementById('cdh-diagnostic');if(!p)return;
   p.textContent=
-   'Control Dynamic HUD v0.9 persistent-lifecycle suite\n'
-  +'HUD '+yes(hudVisible)+' | active '+yes(active)+' | playerMode '+playerMode+'\n'
-  +'engine '+yes(!!window.engine)+' | HUDMode '+yes(!!window.g_HUDMode)+' | missionModel '+yes(!!window.g_missionPromptUIData)+'\n'
-  +'health '+yes(!!document.querySelector('.health-bar'))+' / fill '+yes(!!document.querySelector('.health-bar__fill'))+'\n'
-  +'mission '+yes(!!document.querySelector('.mission-log-wrapper'))+' / map '+yes(!!document.querySelector('.map-overlay'))+'\n'
-  +'crosshair '+yes(!!document.querySelector('.awesome-crosshair'))+' / ammo '+yes(!!document.querySelector('.awesome-crosshair--ammo'))+'\n'
-  +'enemyHP '+yes(!!document.querySelector('.enemy-health-container'))+' / energy '+yes(!!document.querySelector('.ability-resource-bar'))+'\n'
-  +'source '+yes(!!document.querySelector('.essence-collector--hud'))+' / pickup '+yes(!!document.querySelector('.pickup-notifications-container'))+'\n'
-  +'interaction '+yes(!!document.querySelector('.interaction-marker-container'))+' / threat '+yes(!!document.querySelector('.threat-indicators'))+'\n'
-  +'expedition '+yes(!!document.querySelector('.expedition-hud > .expedition-mod-group'))+
+   'Control Dynamic HUD v1.0A configurable suite\n'
+  +'HUD '+yes(hudVisible)+' | active '+yes(active)+' | force '+yes(isForced())+' | key '+CFG.showHudKey+'\n'
+  +'health '+yes(CDH.health)+' | mission '+yes(CDH.mission)+' | crosshair '+yes(CDH.crosshair)+' | expedition '+yes(CDH.expedition)+'\n'
+  +'ammo '+yes(!!document.querySelector('.awesome-crosshair--ammo'))+' | enemyHP '+yes(!!document.querySelector('.enemy-health-container'))+' | energy '+yes(!!document.querySelector('.ability-resource-bar'))+'\n'
+  +'pickup '+yes(!!document.querySelector('.pickup-notifications-container'))+' | interaction '+yes(!!document.querySelector('.interaction-marker-container'))+' | threat '+yes(!!document.querySelector('.threat-indicators'))+
    (CDH.lastError?'\nERR '+CDH.lastError:'');
  }
  function startDiag(){
-  if(document.getElementById('cdh-diagnostic'))return;
+  if(!CFG.diagnostics||document.getElementById('cdh-diagnostic'))return;
   var p=document.createElement('div');p.id='cdh-diagnostic';
   (document.body||document.documentElement).appendChild(p);updateDiag();
-  var n=0;diagTimer=setInterval(function(){
-   updateDiag();
-   if(++n>=40){clearInterval(diagTimer);diagTimer=0;}
-  },500);
-  setTimeout(function(){var x=document.getElementById('cdh-diagnostic');if(x)x.remove();},22000);
+  diagTimer=setInterval(updateDiag,500);
  }
-
  window.addEventListener('error',function(e){
-  CDH.lastError=(e&&e.message)?String(e.message):'window error';
-  updateDiag();
+  CDH.lastError=(e&&e.message)?String(e.message):'window error';updateDiag();
  });
  window.addEventListener('unhandledrejection',function(e){
-  CDH.lastError='promise: '+String(e&&e.reason?e.reason:'unknown');
-  updateDiag();
+  CDH.lastError='promise: '+String(e&&e.reason?e.reason:'unknown');updateDiag();
  });
 
  var attempts=0;
@@ -288,24 +390,26 @@ static const char kSuiteScript[] = R"JS(
   }
   playerMode=g_HUDMode.m_iPlayerMode;
   hudVisible=(g_HUDMode.m_bIsHudVisible!==false);
-  active=hudVisible && playerMode!==MODE.HIDDEN;
+  active=hudVisible&&playerMode!==MODE.HIDDEN;
   CDH.hudVisible=hudVisible;CDH.active=active;
 
   engine.addModelChangeListener(g_HUDMode,'m_iPlayerMode',function(){
-   playerMode=g_HUDMode.m_iPlayerMode;
-   recomputeActive();
-   if(active){updateHealth();updateCrosshair();scheduleRebind(0);}
-   updateDiag();
+   playerMode=g_HUDMode.m_iPlayerMode;recomputeActive();
+   if(active){updateHealth();updateCrosshair();scheduleRebind(0);}updateDiag();
   });
   engine.addModelChangeListener(g_HUDMode,'m_bIsHudVisible',function(){
    recomputeActive();updateDiag();
   });
   if(window.g_missionPromptUIData){
    engine.addModelChangeListener(g_missionPromptUIData,'m_missionUIData',function(){
-    if(active&&mission.log){missionShow();missionHide(7000);}
+    if(active&&CFG.missionEnabled&&mission.log){
+     missionShow();
+     if(CFG.missionUpdateVisibleMs>0)missionHide(CFG.missionUpdateVisibleMs);
+    }
     updateDiag();
    });
   }
+  document.addEventListener('keydown',function(e){if(keyMatches(e))forceShowHUD();},true);
 
   startDiag();
   heartbeat=setInterval(heartbeatTick,1000);
@@ -356,12 +460,14 @@ static void* resolve_export(void* module,const char* name,int depth){
     for(u32 i=0;i<nn;++i){const char* n=(const char*)(base+names[i]); if(!streq_ascii(n,name))continue; u32 r=funcs[ords[i]]; if(r>=er&&r<er+es)return resolve_forwarder((const char*)(base+r),depth); return base+r;} return nullptr;
 }
 
-struct WinApi { FnCreateFileW CreateFileW; FnWriteFile WriteFile; FnCloseHandle CloseHandle; FnVirtualAlloc VirtualAlloc; FnVirtualProtect VirtualProtect; FnFlushInstructionCache FlushInstructionCache; };
+struct WinApi { FnCreateFileW CreateFileW; FnWriteFile WriteFile; FnCloseHandle CloseHandle; FnVirtualAlloc VirtualAlloc; FnVirtualProtect VirtualProtect; FnFlushInstructionCache FlushInstructionCache; FnGetPrivateProfileIntA GetPrivateProfileIntA; FnGetPrivateProfileStringA GetPrivateProfileStringA; };
 static bool init_api(WinApi& a){
     void* k=find_module("kernel32.dll"); if(!k)return false;
     a.CreateFileW=(FnCreateFileW)resolve_export(k,"CreateFileW"); a.WriteFile=(FnWriteFile)resolve_export(k,"WriteFile"); a.CloseHandle=(FnCloseHandle)resolve_export(k,"CloseHandle");
     a.VirtualAlloc=(FnVirtualAlloc)resolve_export(k,"VirtualAlloc"); a.VirtualProtect=(FnVirtualProtect)resolve_export(k,"VirtualProtect"); a.FlushInstructionCache=(FnFlushInstructionCache)resolve_export(k,"FlushInstructionCache");
-    return a.CreateFileW&&a.WriteFile&&a.CloseHandle&&a.VirtualAlloc&&a.VirtualProtect&&a.FlushInstructionCache;
+    a.GetPrivateProfileIntA=(FnGetPrivateProfileIntA)resolve_export(k,"GetPrivateProfileIntA");
+    a.GetPrivateProfileStringA=(FnGetPrivateProfileStringA)resolve_export(k,"GetPrivateProfileStringA");
+    return a.CreateFileW&&a.WriteFile&&a.CloseHandle&&a.VirtualAlloc&&a.VirtualProtect&&a.FlushInstructionCache&&a.GetPrivateProfileIntA&&a.GetPrivateProfileStringA;
 }
 
 static void log_bytes(const char* s,DWORD n){ if(!g_log||!g_WriteFile)return; DWORD w=0; g_WriteFile(g_log,s,n,&w,nullptr); }
@@ -390,6 +496,75 @@ static bool coherent_build_matches(void* module){
 }
 
 
+
+static u32 clamp_u32(u32 v,u32 lo,u32 hi){return v<lo?lo:(v>hi?hi:v);}
+static void copy_key(char* dst,usize cap,const char* src){
+    if(!dst||!cap)return;usize o=0;
+    while(src&&src[o]&&o+1<cap){
+        char c=src[o];
+        bool ok=(c>='A'&&c<='Z')||(c>='a'&&c<='z')||(c>='0'&&c<='9');
+        dst[o]=ok?c:'_';++o;
+    }
+    dst[o]=0;
+}
+static char* app(char* p,char* end,const char* s){while(*s&&p<end-1)*p++=*s++;*p=0;return p;}
+static char* app_u32(char* p,char* end,u32 v){
+    char b[16];int n=0;if(!v)b[n++]='0';else{char r[16];int k=0;while(v&&k<16){r[k++]=char('0'+v%10);v/=10;}while(k)b[n++]=r[--k];}
+    b[n]=0;return app(p,end,b);
+}
+static void load_config(WinApi& a){
+    const char* ini="plugins\\ControlDynamicHUD.ini";
+    g_cfg.enabled=a.GetPrivateProfileIntA("General","Enabled",1,ini)!=0;
+    g_cfg.diagnostics=a.GetPrivateProfileIntA("General","ShowDiagnostics",0,ini)!=0;
+    char key[16]{};a.GetPrivateProfileStringA("Hotkeys","ShowHUDKey","F1",key,sizeof(key),ini);copy_key(g_cfg.showHudKey,sizeof(g_cfg.showHudKey),key);
+    g_cfg.showHudDurationMs=clamp_u32(a.GetPrivateProfileIntA("Hotkeys","ShowHUDDurationMs",5000,ini),0,60000);
+
+    g_cfg.healthEnabled=a.GetPrivateProfileIntA("Health","Enabled",1,ini)!=0;
+    g_cfg.healthHideDelayMs=clamp_u32(a.GetPrivateProfileIntA("Health","HideDelayMs",2000,ini),0,60000);
+    g_cfg.healthFadeDurationMs=clamp_u32(a.GetPrivateProfileIntA("Health","FadeDurationMs",300,ini),0,10000);
+    g_cfg.healthOpacityPercent=clamp_u32(a.GetPrivateProfileIntA("Health","VisibleOpacityPercent",80,ini),0,100);
+    g_cfg.healthShowDuringCombat=a.GetPrivateProfileIntA("Health","ShowDuringCombat",1,ini)!=0;
+    g_cfg.healthThresholdPercent=clamp_u32(a.GetPrivateProfileIntA("Health","ShowHealthThresholdPercent",100,ini),0,100);
+
+    g_cfg.missionEnabled=a.GetPrivateProfileIntA("MissionLog","Enabled",1,ini)!=0;
+    g_cfg.missionInitialHideDelayMs=clamp_u32(a.GetPrivateProfileIntA("MissionLog","InitialHideDelayMs",2000,ini),0,60000);
+    g_cfg.missionAfterMapCloseHideDelayMs=clamp_u32(a.GetPrivateProfileIntA("MissionLog","AfterMapCloseHideDelayMs",3000,ini),0,60000);
+    g_cfg.missionUpdateVisibleMs=clamp_u32(a.GetPrivateProfileIntA("MissionLog","MissionUpdateVisibleMs",7000,ini),0,60000);
+    g_cfg.missionFadeDurationMs=clamp_u32(a.GetPrivateProfileIntA("MissionLog","FadeDurationMs",300,ini),0,10000);
+    g_cfg.missionShowInMap=a.GetPrivateProfileIntA("MissionLog","ShowInMap",1,ini)!=0;
+
+    g_cfg.crosshairEnabled=a.GetPrivateProfileIntA("Crosshair","Enabled",1,ini)!=0;
+    g_cfg.crosshairHideDelayMs=clamp_u32(a.GetPrivateProfileIntA("Crosshair","HideDelayMs",1000,ini),0,60000);
+    g_cfg.crosshairFadeDurationMs=clamp_u32(a.GetPrivateProfileIntA("Crosshair","FadeDurationMs",300,ini),0,10000);
+
+    g_cfg.expeditionEnabled=a.GetPrivateProfileIntA("Expedition","Enabled",1,ini)!=0;
+    g_cfg.expeditionHideDelayMs=clamp_u32(a.GetPrivateProfileIntA("Expedition","HideDelayMs",2000,ini),0,60000);
+    g_cfg.expeditionFadeDurationMs=clamp_u32(a.GetPrivateProfileIntA("Expedition","FadeDurationMs",300,ini),0,10000);
+}
+static void build_config_script(){
+    char* p=g_configScript;char* end=g_configScript+sizeof(g_configScript);
+    p=app(p,end,"window.__CDH_NATIVE_CONFIG={diagnostics:");p=app_u32(p,end,g_cfg.diagnostics?1:0);
+    p=app(p,end,",showHudKey:'");p=app(p,end,g_cfg.showHudKey);p=app(p,end,"',showHudDurationMs:");p=app_u32(p,end,g_cfg.showHudDurationMs);
+    p=app(p,end,",healthEnabled:");p=app_u32(p,end,g_cfg.healthEnabled?1:0);
+    p=app(p,end,",healthHideDelayMs:");p=app_u32(p,end,g_cfg.healthHideDelayMs);
+    p=app(p,end,",healthFadeDurationMs:");p=app_u32(p,end,g_cfg.healthFadeDurationMs);
+    p=app(p,end,",healthOpacityPercent:");p=app_u32(p,end,g_cfg.healthOpacityPercent);
+    p=app(p,end,",healthShowDuringCombat:");p=app_u32(p,end,g_cfg.healthShowDuringCombat?1:0);
+    p=app(p,end,",healthThresholdPercent:");p=app_u32(p,end,g_cfg.healthThresholdPercent);
+    p=app(p,end,",missionEnabled:");p=app_u32(p,end,g_cfg.missionEnabled?1:0);
+    p=app(p,end,",missionInitialHideDelayMs:");p=app_u32(p,end,g_cfg.missionInitialHideDelayMs);
+    p=app(p,end,",missionAfterMapCloseHideDelayMs:");p=app_u32(p,end,g_cfg.missionAfterMapCloseHideDelayMs);
+    p=app(p,end,",missionUpdateVisibleMs:");p=app_u32(p,end,g_cfg.missionUpdateVisibleMs);
+    p=app(p,end,",missionFadeDurationMs:");p=app_u32(p,end,g_cfg.missionFadeDurationMs);
+    p=app(p,end,",missionShowInMap:");p=app_u32(p,end,g_cfg.missionShowInMap?1:0);
+    p=app(p,end,",crosshairEnabled:");p=app_u32(p,end,g_cfg.crosshairEnabled?1:0);
+    p=app(p,end,",crosshairHideDelayMs:");p=app_u32(p,end,g_cfg.crosshairHideDelayMs);
+    p=app(p,end,",crosshairFadeDurationMs:");p=app_u32(p,end,g_cfg.crosshairFadeDurationMs);
+    p=app(p,end,",expeditionEnabled:");p=app_u32(p,end,g_cfg.expeditionEnabled?1:0);
+    p=app(p,end,",expeditionHideDelayMs:");p=app_u32(p,end,g_cfg.expeditionHideDelayMs);
+    p=app(p,end,",expeditionFadeDurationMs:");p=app_u32(p,end,g_cfg.expeditionFadeDurationMs);
+    p=app(p,end,"};");
+}
 static bool get_text(void* module,u8*& text,u32& size){
     u8* b=(u8*)module;if(!b||rd16(b)!=0x5A4D)return false;u32 e=rd32(b+0x3C);u8* nt=b+e;if(rd32(nt)!=0x4550)return false;u16 ns=rd16(nt+6),os=rd16(nt+20);u8* sec=nt+24+os;
     for(u16 i=0;i<ns;++i,sec+=40){ if(sec[0]=='.'&&sec[1]=='t'&&sec[2]=='e'&&sec[3]=='x'&&sec[4]=='t'){u32 vs=rd32(sec+8),va=rd32(sec+12);text=b+va;size=vs;return true;} } return false;
@@ -459,8 +634,9 @@ static void WINAPI HookReady(void* self){
     }
 
     log_line("Calling View::ExecuteScript through vtable[61] for this HUD binding context.");
+    ((ExecuteScriptFn)execute)(view,g_configScript,nullptr);
     ((ExecuteScriptFn)execute)(view,kSuiteScript,nullptr);
-    log_line("Cumulative HUD suite injected for current binding context; slot-28 hook remains active.");
+    log_line("Config + cumulative HUD suite injected for current binding context; slot-28 hook remains active.");
 }
 
 static bool install_ready_hook(void* hud){
@@ -516,16 +692,19 @@ static bool install_hook(WinApi& api,uptr target){
     DWORD dummy=0;api.VirtualProtect((void*)target,stolen,old,&dummy);api.FlushInstructionCache((HANDLE)(uptr)-1,(void*)target,stolen);return true;
 }
 
-extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 90;}
+extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 100;}
 extern "C" __declspec(dllexport) void* CDH_RelocAnchor=(void*)&CDH_Version;
 
 extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     if(reason!=DLL_PROCESS_ATTACH)return 1; WinApi api{};if(!init_api(api))return 1;
     g_VirtualProtect=api.VirtualProtect;
     g_FlushInstructionCache=api.FlushInstructionCache;
+    load_config(api);build_config_script();
     g_WriteFile=api.WriteFile;g_log=api.CreateFileW(L"plugins\\ControlDynamicHUD.log",GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
     if(!g_log||(uptr)g_log==INVALID_HANDLE_VALUE_U)return 1;
-    log_line("Control Dynamic HUD V0.9 PERSISTENT HUD LIFECYCLE SUITE");log_line("Mode: persistent slot-28 reinjection + bounded rebind + health + mission + crosshair + selector diagnostics");
+    log_line("Control Dynamic HUD V1.0A CONFIGURABLE HUD TEST");log_line("Mode: persistent lifecycle + INI timers + F1 Show HUD + expedition fix");
+    log_cstr("Config: Enabled=");log_dec(g_cfg.enabled?1:0);log_cstr(" ShowHUDKey=");log_cstr(g_cfg.showHudKey);log_cstr(" ShowHUDDurationMs=");log_dec(g_cfg.showHudDurationMs);log_bytes("\r\n",2);
+    if(!g_cfg.enabled){log_line("Mod disabled by INI; no hook installed.");return 1;}
     log_cstr("Executable: ");log_wide(first_module_name());log_bytes("\r\n",2);void* exe=first_module_base();log_cstr("Executable base: ");log_hex((uptr)exe);log_bytes("\r\n",2);
     void* coh=find_module("coherentuigt.dll");g_coherentBase=coh;log_cstr("CoherentUIGT.dll: ");if(coh){log_hex((uptr)coh);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
     void* ui=find_module("ui_rmdwin10_f.dll");log_cstr("ui_rmdwin10_f.dll: ");if(ui){log_hex((uptr)ui);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
