@@ -60,7 +60,8 @@ static volatile u32 g_readyCalls = 0;
 static constexpr u32 kCoherentTimeDateStamp = 0x5E8F6E9A;
 static constexpr u32 kCoherentSizeOfImage = 0x329000;
 static constexpr u32 kCoherentCheckSum = 0x00323A4A;
-static constexpr uptr kExecuteScriptRva = 0xDBD00;
+static constexpr uptr kPublicViewVtableRva = 0x270780;
+static constexpr uptr kExecuteScriptRva = 0x82870;
 static constexpr uptr kViewPageOffset = 0xA8;
 
 static const char kHealthScript[] = R"JS(
@@ -255,10 +256,12 @@ static void WINAPI HookReady(void* self){
     uptr viewPage=view?rdptr((u8*)view+kViewPageOffset):0;
     uptr viewVtable=view?rdptr(view):0;
     uptr execute=viewVtable?rdptr((u8*)viewVtable+61u*sizeof(uptr)):0;
+    uptr expectedVtable=(uptr)g_coherentBase+kPublicViewVtableRva;
     uptr expected=(uptr)g_coherentBase+kExecuteScriptRva;
 
     log_cstr("HUD onReadyForBindings #");log_dec(n);
     log_cstr(" View*=");log_hex((uptr)view);
+    log_cstr(" ViewVtable=");log_hex(viewVtable);
     log_cstr(" ViewPage*=");log_hex(viewPage);
     log_cstr(" ExecuteScript=");log_hex(execute);
     log_bytes("\r\n",2);
@@ -266,12 +269,17 @@ static void WINAPI HookReady(void* self){
     // Restore first so ExecuteScript cannot re-enter through our temporary page hook.
     restore_ready_hook();
 
-    if(!view||!viewPage||!execute){
+    if(!view||!viewPage||!viewVtable||!execute){
         log_line("FAIL-OPEN: ready callback did not expose an injectable View.");
         return;
     }
+    if(viewVtable!=expectedVtable){
+        log_cstr("FAIL-OPEN: public View vtable mismatch; expected ");log_hex(expectedVtable);
+        log_cstr(" got ");log_hex(viewVtable);log_bytes("\r\n",2);
+        return;
+    }
     if(execute!=expected){
-        log_cstr("FAIL-OPEN: View vtable[61] mismatch; expected ");log_hex(expected);
+        log_cstr("FAIL-OPEN: public View vtable[61] mismatch; expected ");log_hex(expected);
         log_cstr(" got ");log_hex(execute);log_bytes("\r\n",2);
         return;
     }
@@ -334,7 +342,7 @@ static bool install_hook(WinApi& api,uptr target){
     DWORD dummy=0;api.VirtualProtect((void*)target,stolen,old,&dummy);api.FlushInstructionCache((HANDLE)(uptr)-1,(void*)target,stolen);return true;
 }
 
-extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 55;}
+extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 56;}
 extern "C" __declspec(dllexport) void* CDH_RelocAnchor=(void*)&CDH_Version;
 
 extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
@@ -343,7 +351,7 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     g_FlushInstructionCache=api.FlushInstructionCache;
     g_WriteFile=api.WriteFile;g_log=api.CreateFileW(L"plugins\\ControlDynamicHUD.log",GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
     if(!g_log||(uptr)g_log==INVALID_HANDLE_VALUE_U)return 1;
-    log_line("Control Dynamic HUD V0.5R CURRENT-ABI HEALTH TEST");log_line("Mode: slot-28 onReadyForBindings + virtual View::ExecuteScript + dynamic health only");
+    log_line("Control Dynamic HUD V0.5S PUBLIC-WRAPPER HEALTH TEST");log_line("Mode: slot-28 onReadyForBindings + validated public UIGTView vtable + dynamic health only");
     log_cstr("Executable: ");log_wide(first_module_name());log_bytes("\r\n",2);void* exe=first_module_base();log_cstr("Executable base: ");log_hex((uptr)exe);log_bytes("\r\n",2);
     void* coh=find_module("coherentuigt.dll");g_coherentBase=coh;log_cstr("CoherentUIGT.dll: ");if(coh){log_hex((uptr)coh);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
     void* ui=find_module("ui_rmdwin10_f.dll");log_cstr("ui_rmdwin10_f.dll: ");if(ui){log_hex((uptr)ui);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
