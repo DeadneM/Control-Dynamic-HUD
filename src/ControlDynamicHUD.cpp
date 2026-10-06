@@ -125,7 +125,7 @@ static const char kSuiteScript[] = R"JS(
   hudVisible:true,active:true,lastError:'',forceVisible:false
  };
  var MODE={COMBAT:0,ADVENTURING:1,STORY:2,ACTION:3,EXAMINE:4,HIDDEN:5};
- var playerMode=1,hudVisible=true,active=true;
+ var playerMode=1,isAiming=false,hudVisible=true,active=true;
  var hp={bar:null,fill:null,obs:null,timer:0,shown:true};
  var mission={map:null,log:null,obs:null,timer:0,shown:true};
  var cross={el:null,timer:0,shown:true,hideLatched:false};
@@ -252,23 +252,31 @@ static const char kSuiteScript[] = R"JS(
   if(!cross.el||!cross.el.isConnected)return;
   cross.el.classList.toggle('cdh-hide',v);cross.shown=!v;
  }
+ function crosshairShouldShow(){
+  return playerMode===MODE.COMBAT||isAiming;
+ }
  function updateCrosshair(){
   if(!active||!CFG.crosshairEnabled)return;
   if(!cross.el||!cross.el.isConnected){CDH.crosshair=false;scheduleRebind(100);return;}
   if(isForced()){clearTimer(cross);setCrossHidden(false);return;}
-  var shouldHide=playerMode===MODE.ADVENTURING;
-  if(!shouldHide){
-   clearTimer(cross);cross.hideLatched=false;setCrossHidden(false);
+
+  if(crosshairShouldShow()){
+   clearTimer(cross);
+   cross.hideLatched=false;
+   setCrossHidden(false);
    return;
   }
+
   if(cross.hideLatched){
-   clearTimer(cross);setCrossHidden(true);
+   clearTimer(cross);
+   setCrossHidden(true);
    return;
   }
+
   if(cross.shown&&!cross.timer){
    cross.timer=setTimeout(function(){
     cross.timer=0;
-    if(active&&!isForced()&&playerMode===MODE.ADVENTURING){
+    if(active&&!isForced()&&!crosshairShouldShow()){
      cross.hideLatched=true;
      setCrossHidden(true);
     }
@@ -281,7 +289,7 @@ static const char kSuiteScript[] = R"JS(
   if(!e){cross.el=null;CDH.crosshair=false;return false;}
   var changed=(e!==cross.el);
   cross.el=e;cross.shown=!e.classList.contains('cdh-hide');CDH.crosshair=true;
-  if(changed&&cross.hideLatched&&playerMode===MODE.ADVENTURING&&!isForced())setCrossHidden(true);
+  if(changed&&cross.hideLatched&&!crosshairShouldShow()&&!isForced())setCrossHidden(true);
   else updateCrosshair();
   return true;
  }
@@ -386,7 +394,7 @@ static const char kSuiteScript[] = R"JS(
   var p=document.getElementById('cdh-diagnostic');if(!p)return;
   p.textContent=
    'Control Dynamic HUD v1.0B configurable suite\n'
-  +'HUD '+yes(hudVisible)+' | active '+yes(active)+' | force '+yes(isForced())+' | key '+CFG.showHudKey+'\n'
+  +'HUD '+yes(hudVisible)+' | active '+yes(active)+' | force '+yes(isForced())+' | aim '+yes(isAiming)+' | key '+CFG.showHudKey+'\n'
   +'health '+yes(CDH.health)+' | mission '+yes(CDH.mission)+' | crosshair '+yes(CDH.crosshair)+' | expedition '+yes(CDH.expedition)+'\n'
   +'ammo '+yes(!!document.querySelector('.awesome-crosshair--ammo'))+' | enemyHP '+yes(!!document.querySelector('.enemy-health-container'))+' | energy '+yes(!!document.querySelector('.ability-resource-bar'))+'\n'
   +'pickup '+yes(!!document.querySelector('.pickup-notifications-container'))+' | interaction '+yes(!!document.querySelector('.interaction-marker-container'))+' | threat '+yes(!!document.querySelector('.threat-indicators'))+
@@ -422,6 +430,11 @@ static const char kSuiteScript[] = R"JS(
   });
   engine.addModelChangeListener(g_HUDMode,'m_bIsHudVisible',function(){
    recomputeActive();updateDiag();
+  });
+  engine.on('onPlayerAimChanged',function(v){
+   isAiming=!!v;
+   if(active)updateCrosshair();
+   updateDiag();
   });
   if(window.g_missionPromptUIData){
    engine.addModelChangeListener(g_missionPromptUIData,'m_missionUIData',function(){
@@ -859,7 +872,7 @@ static bool install_hook(WinApi& api,uptr target){
     DWORD dummy=0;api.VirtualProtect((void*)target,stolen,old,&dummy);api.FlushInstructionCache((HANDLE)(uptr)-1,(void*)target,stolen);return true;
 }
 
-extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 102;}
+extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 103;}
 extern "C" __declspec(dllexport) void* CDH_RelocAnchor=(void*)&CDH_Version;
 
 extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
@@ -870,7 +883,7 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     load_config(api);g_showHudVk=parse_vk(g_cfg.showHudKey);build_config_script();
     g_WriteFile=api.WriteFile;g_log=api.CreateFileW(L"plugins\\ControlDynamicHUD.log",GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
     if(!g_log||(uptr)g_log==INVALID_HANDLE_VALUE_U)return 1;
-    log_line("Control Dynamic HUD V1.0C RETICLE + SLAM TARGET TEST");log_line("Mode: persistent lifecycle + native hotkey + jump-stable crosshair + optional Ground Slam target suppression");
+    log_line("Control Dynamic HUD V1.0D AIM-EVENT CROSSHAIR TEST");log_line("Mode: persistent lifecycle + native hotkey + real aim-event crosshair + optional Ground Slam target suppression");
     log_cstr("Config: Enabled=");log_dec(g_cfg.enabled?1:0);log_cstr(" ShowHUDKey=");log_cstr(g_cfg.showHudKey);log_cstr(" VK=");log_hex(g_showHudVk);log_cstr(" ShowHUDDurationMs=");log_dec(g_cfg.showHudDurationMs);log_bytes("\r\n",2);
     if(!g_cfg.enabled){log_line("Mod disabled by INI; no hook installed.");return 1;}
     log_cstr("Executable: ");log_wide(first_module_name());log_bytes("\r\n",2);void* exe=first_module_base();log_cstr("Executable base: ");log_hex((uptr)exe);log_bytes("\r\n",2);
