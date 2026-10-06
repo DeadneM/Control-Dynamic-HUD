@@ -15,11 +15,11 @@ V0.9 fixed the core lifecycle problems:
 - persistent slot-28 lifecycle hook survives pause/menu page recreation;
 - no legacy per-frame reinjection storm.
 
-### V1.0K configurable test branch
+### V1.0L configurable test branch
 
 Branch: `dev/v1.0-configurable-hud`
 
-V1.0K adds configuration through `plugins/ControlDynamicHUD.ini`.
+V1.0L adds configuration through `plugins/ControlDynamicHUD.ini`.
 
 Currently configurable:
 
@@ -122,6 +122,16 @@ HideDelayMs=2000
 FadeDurationMs=300
 ```
 
+### Launch target reticle
+
+```ini
+[Launch]
+HideTargetReticle=1
+HideDelayMs=0
+```
+
+This hides the Launch targeting reticle that remains attached to enemies/targets.
+
 ### Ground Slam target circle
 
 ```ini
@@ -139,15 +149,15 @@ HideMissionSelect=0
 
 Both options are **off by default**. When either option is enabled, the plugin hooks the separate `menu.ui` page. V1.0J hard-disables the matching entry, removes it from the DOM, removes keyboard focus, blocks pointer input, and installs capture-phase guards so the hidden entry cannot still be activated.
 
-### Multi Launch held-object input glyphs
+### Multi Launch object-attached indicators
 
 ```ini
 [MultiLaunch]
-HideInputPrompts=1
+HideObjectIndicators=1
 HideDelayMs=0
 ```
 
-V1.0F/V1.0G DOM targeting, the V1.0H JavaScript model-write path, and the V1.0I interaction-marker opacity path were rejected. V1.0K now targets the three native MultiLaunchIndicator models directly. The current-build layout is HUD+0x168 -> Launch block; indicators at +0x88/+0x120/+0x1B8; each indicator's m_bHighlightVisible is at +0x60. After the game HUD update, the plugin forces those three visibility flags off after the configurable HideDelayMs. F1 temporarily suspends this suppression.
+V1.0F through V1.0K targeted the wrong Multi Launch field. The exact current-build model layout is now audited from the registration functions themselves. The Launch block is at HUD+0x168. The main LaunchIndicator is the first object in that block and its m_bIsReticuleHidden field is +0x19. The three object-attached MultiLaunchIndicator objects are at +0x88/+0x120/+0x1B8; within each, m_bHasAimTarget is +0x40, m_bIsReticuleHidden is +0x41, and m_iValue is +0x44. V1.0L hides the main enemy/target Launch reticle and the three object-attached Multi Launch indicators through those exact native fields after the game's HUD update. F1 temporarily suspends suppression.
 
 All timing values are in milliseconds.
 
@@ -170,8 +180,8 @@ The important current-build findings are:
 ## Roadmap
 
 - V1.0D real-aim crosshair behavior validated;
-- validate V1.0K direct MultiLaunchIndicator visibility suppression;
-- validate V1.0J safe main-menu removal with no remaining clickable/focusable hitbox;
+- validate V1.0L exact LaunchIndicator/MultiLaunchIndicator reticle suppression;
+- validate V1.0L non-destructive main-menu hiding plus native no-op guards for New Game and Mission Select;
 - validate the hardened Expedition forced-modifier behavior;
 - add configurable behavior for additional HUD elements where safe;
 - optional in-game configuration overlay later;
