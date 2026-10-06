@@ -41,19 +41,94 @@ using FnVirtualProtect = BOOL (WINAPI*)(LPVOID,usize,DWORD,DWORD*);
 using FnFlushInstructionCache = BOOL (WINAPI*)(HANDLE,LPCVOID,usize);
 
 typedef void* (WINAPI *FactoryFn)(void*, void*, void*, void*);
-typedef void* (WINAPI *GetNativeViewFn)(void*, u32);
+typedef void* (WINAPI *PageGetViewFn)(void*);
+typedef void (WINAPI *ExecuteScriptFn)(void*, const char*, const char*);
 typedef void (WINAPI *ReadyFn)(void*);
 
 static HANDLE g_log = nullptr;
 static FnWriteFile g_WriteFile = nullptr;
 static FactoryFn g_originalFactory = nullptr;
-static GetNativeViewFn g_getNativeView = nullptr;
+static PageGetViewFn g_pageGetView = nullptr;
+static ExecuteScriptFn g_executeScript = nullptr;
 static ReadyFn g_originalReady = nullptr;
 static uptr* g_readyEntry = nullptr;
 static FnVirtualProtect g_VirtualProtect = nullptr;
 static FnFlushInstructionCache g_FlushInstructionCache = nullptr;
 static volatile u32 g_factoryCalls = 0;
 static volatile u32 g_readyCalls = 0;
+
+static constexpr u32 kCoherentTimeDateStamp = 0x5E8F6E9A;
+static constexpr u32 kCoherentSizeOfImage = 0x329000;
+static constexpr u32 kCoherentCheckSum = 0x00323A4A;
+static constexpr uptr kExecuteScriptRva = 0xDBD00;
+static constexpr uptr kViewPageOffset = 0xA8;
+
+static const char kHealthScript[] = R"JS(
+(function(){
+ if(window.__ControlDynamicHUDHealth)return;
+ window.__ControlDynamicHUDHealth={version:5};
+ var COMBAT=0,THRESHOLD=1.0,FADE=2000,VISIBLE_OPACITY=0.8;
+ var hpbar=null,fill=null,fillObs=null,hideTimer=0,shown=true,playerMode=1,domObs=null;
+ function ensureStyle(){
+  if(document.getElementById('cdh-health-style'))return;
+  var s=document.createElement('style');s.id='cdh-health-style';
+  s.textContent='.health-bar:not(.health-bar--hidden){transition:opacity 300ms var(--easing);}'
+   +'.health-bar[data-cdh-health-hidden="0"]:not(.health-bar--hidden){opacity:'+VISIBLE_OPACITY+';}'
+   +'.health-bar[data-cdh-health-hidden="1"]:not(.health-bar--hidden){opacity:0;}'
+   +'.health-bar--hidden{opacity:0!important;}';
+  (document.head||document.documentElement).appendChild(s);
+ }
+ function setHidden(v){
+  if(!hpbar)return;
+  hpbar.setAttribute('data-cdh-health-hidden',v?'1':'0');
+  shown=!v;
+ }
+ function clearHide(){if(hideTimer){clearTimeout(hideTimer);hideTimer=0;}}
+ function healthPercent(){
+  if(!fill)return 1;
+  var ow=fill.offsetWidth;if(!ow)return 1;
+  return fill.getBoundingClientRect().width/ow;
+ }
+ function update(){
+  if(!hpbar||!fill||!hpbar.isConnected||!fill.isConnected){bind();return;}
+  var should=(healthPercent()<THRESHOLD)||(playerMode===COMBAT);
+  if(should){clearHide();if(!shown)setHidden(false);}
+  else if(shown&&!hideTimer){
+   hideTimer=setTimeout(function(){hideTimer=0;if(hpbar&&hpbar.isConnected)setHidden(true);},FADE);
+  }
+ }
+ function bind(){
+  var b=document.querySelector('.health-bar');
+  var f=document.querySelector('.health-bar__fill');
+  if(!b||!f)return false;
+  if(b===hpbar&&f===fill&&b.isConnected&&f.isConnected)return true;
+  clearHide();if(fillObs){fillObs.disconnect();fillObs=null;}
+  hpbar=b;fill=f;shown=true;setHidden(false);
+  fillObs=new MutationObserver(function(){update();});
+  fillObs.observe(fill,{attributes:true,attributeFilter:['style']});
+  update();return true;
+ }
+ var attempts=0;
+ function boot(){
+  if(!document.documentElement||!window.engine||!window.g_HUDMode){
+   if(++attempts<100)setTimeout(boot,100);
+   return;
+  }
+  if(window.g_runtimeInterfaceOptions&&g_runtimeInterfaceOptions.m_bPlayerStatsEnabled===false)return;
+  ensureStyle();
+  playerMode=g_HUDMode.m_iPlayerMode;
+  engine.addModelChangeListener(g_HUDMode,'m_iPlayerMode',function(){
+   playerMode=g_HUDMode.m_iPlayerMode;update();
+  });
+  domObs=new MutationObserver(function(){
+   if(!hpbar||!fill||!hpbar.isConnected||!fill.isConnected)bind();
+  });
+  domObs.observe(document.documentElement,{childList:true,subtree:true});
+  bind();
+ }
+ boot();
+})();
+)JS";
 
 static inline void* get_peb() { void* peb; __asm__ __volatile__("movq %%gs:0x60, %0" : "=r"(peb)); return peb; }
 static u16 rd16(const void* p){ return *(const volatile u16*)p; }
@@ -111,6 +186,23 @@ static void log_hex(uptr v){char b[18];b[0]='0';b[1]='x';const char*h="012345678
 static void log_dec(u64 v){char b[32];int p=31;b[p--]=0;if(!v)b[p--]='0';while(v&&p>=0){b[p--]=char('0'+v%10);v/=10;}log_cstr(b+p+1);}
 static void log_wide(const UNICODE_STRING_T* us){if(!us||!us->Buffer){log_cstr("<unknown>");return;}char b[260];usize n=us->Length/2,o=0;for(usize i=0;i<n&&o<259;++i){wchar_t c=us->Buffer[i];b[o++]=(c>=32&&c<127)?char(c):'?';}b[o]=0;log_cstr(b);}
 
+static bool coherent_build_matches(void* module){
+    if(!module)return false;
+    u8* base=(u8*)module;
+    if(rd16(base)!=0x5A4D)return false;
+    u32 e=rd32(base+0x3C);u8* nt=base+e;
+    if(rd32(nt)!=0x4550)return false;
+    u32 timestamp=rd32(nt+8);
+    u8* opt=nt+24;
+    if(rd16(opt)!=0x20B)return false;
+    u32 imageSize=rd32(opt+0x38);
+    u32 checksum=rd32(opt+0x40);
+    log_cstr("Coherent fingerprint: TimeDateStamp=");log_hex(timestamp);
+    log_cstr(" SizeOfImage=");log_hex(imageSize);
+    log_cstr(" CheckSum=");log_hex(checksum);log_bytes("\r\n",2);
+    return timestamp==kCoherentTimeDateStamp&&imageSize==kCoherentSizeOfImage&&checksum==kCoherentCheckSum;
+}
+
 static bool get_text(void* module,u8*& text,u32& size){
     u8* b=(u8*)module;if(!b||rd16(b)!=0x5A4D)return false;u32 e=rd32(b+0x3C);u8* nt=b+e;if(rd32(nt)!=0x4550)return false;u16 ns=rd16(nt+6),os=rd16(nt+20);u8* sec=nt+24+os;
     for(u16 i=0;i<ns;++i,sec+=40){ if(sec[0]=='.'&&sec[1]=='t'&&sec[2]=='e'&&sec[3]=='x'&&sec[4]=='t'){u32 vs=rd32(sec+8),va=rd32(sec+12);text=b+va;size=vs;return true;} } return false;
@@ -147,23 +239,22 @@ static void WINAPI HookReady(void* self){
     u32 n=++g_readyCalls;
     if(g_originalReady) g_originalReady(self);
 
-    void* system=self?(void*)rdptr((u8*)self+0x10):nullptr;
-    u32 pageIndex=self?rd32((u8*)self+0x18):0xFFFFFFFFu;
-    void* view=(system&&pageIndex!=0xFFFFFFFFu&&g_getNativeView)?g_getNativeView(system,pageIndex):nullptr;
+    void* view=(self&&g_pageGetView)?g_pageGetView(self):nullptr;
+    uptr page=view?rdptr((u8*)view+kViewPageOffset):0;
 
-    if(n<=4 || view){
+    if(n<=4 || (view&&page)){
         log_cstr("HUD ready callback #");log_dec(n);
-        log_cstr(" System*=");log_hex((uptr)system);
-        log_cstr(" pageIndex=");log_dec(pageIndex);
         log_cstr(" View*=");log_hex((uptr)view);
+        log_cstr(" ViewPage*=");log_hex(page);
         log_bytes("\r\n",2);
     }
 
-    if(view){
-        log_line("HUD native View acquired.");
+    if(view&&page&&g_executeScript){
+        g_executeScript(view,kHealthScript,nullptr);
+        log_line("Dynamic health script injected.");
         restore_ready_hook();
     } else if(n>=64){
-        log_line("Ready probe cap reached without a valid View; restoring original vtable.");
+        log_line("Ready probe cap reached without an injectable View; restoring original vtable.");
         restore_ready_hook();
     }
 }
@@ -221,7 +312,7 @@ static bool install_hook(WinApi& api,uptr target){
     DWORD dummy=0;api.VirtualProtect((void*)target,stolen,old,&dummy);api.FlushInstructionCache((HANDLE)(uptr)-1,(void*)target,stolen);return true;
 }
 
-extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 4;}
+extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 5;}
 extern "C" __declspec(dllexport) void* CDH_RelocAnchor=(void*)&CDH_Version;
 
 extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
@@ -230,16 +321,22 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     g_FlushInstructionCache=api.FlushInstructionCache;
     g_WriteFile=api.WriteFile;g_log=api.CreateFileW(L"plugins\\ControlDynamicHUD.log",GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
     if(!g_log||(uptr)g_log==INVALID_HANDLE_VALUE_U)return 1;
-    log_line("Control Dynamic HUD V0.4 ONE-SHOT READY PROBE");log_line("Mode: temporary HUD ready-vtable probe only (no visual changes)");
+    log_line("Control Dynamic HUD V0.5 HEALTH-ONLY TEST");log_line("Mode: native one-shot bridge + dynamic health bar only");
     log_cstr("Executable: ");log_wide(first_module_name());log_bytes("\r\n",2);void* exe=first_module_base();log_cstr("Executable base: ");log_hex((uptr)exe);log_bytes("\r\n",2);
     void* coh=find_module("coherentuigt.dll");log_cstr("CoherentUIGT.dll: ");if(coh){log_hex((uptr)coh);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
     void* ui=find_module("ui_rmdwin10_f.dll");log_cstr("ui_rmdwin10_f.dll: ");if(ui){log_hex((uptr)ui);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
-    const char* getNativeViewName="?getNativeView@System@ui@@QEAAPEAVView@UIGT@Coherent@@I@Z";
-    g_getNativeView=ui?(GetNativeViewFn)resolve_export(ui,getNativeViewName):nullptr;
-    log_cstr("ui::System::getNativeView export: ");if(g_getNativeView)log_hex((uptr)g_getNativeView);else log_cstr("NOT FOUND");log_bytes("\r\n",2);
+    const char* pageGetViewName="?getView@Page@ui@@QEAAPEAVView@UIGT@Coherent@@XZ";
+    g_pageGetView=ui?(PageGetViewFn)resolve_export(ui,pageGetViewName):nullptr;
+    log_cstr("ui::Page::getView export: ");if(g_pageGetView)log_hex((uptr)g_pageGetView);else log_cstr("NOT FOUND");log_bytes("\r\n",2);
+    if(coherent_build_matches(coh)){
+        g_executeScript=(ExecuteScriptFn)((u8*)coh+kExecuteScriptRva);
+        log_cstr("Coherent View::ExecuteScript: ");log_hex((uptr)g_executeScript);log_bytes("\r\n",2);
+    }else{
+        log_line("FAIL-OPEN: unsupported CoherentUIGT build; script injection disabled.");
+    }
     u32 count=0;uptr factory=scan_factory(exe,count);log_cstr("HUD factory signature matches: ");log_dec(count);log_cstr(" first=");log_hex(factory);log_bytes("\r\n",2);
     if(count!=1||!factory){log_line("FAIL-OPEN: unique HUD factory not found; no hook installed.");return 1;}
-    if(!g_getNativeView){log_line("FAIL-OPEN: getNativeView export not found; no hook installed.");return 1;}
+    if(!g_pageGetView||!g_executeScript){log_line("FAIL-OPEN: native UI bridge unavailable; no hook installed.");return 1;}
     s32 rel=*(s32*)(factory+0x32);uptr ctor=factory+0x36+(s64)rel;
     log_cstr("HUD constructor target: ");log_hex(ctor);log_bytes("\r\n",2);
     if(!install_hook(api,factory)){log_line("FAIL-OPEN: hook installation failed.");return 1;}
