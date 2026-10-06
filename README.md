@@ -15,11 +15,11 @@ V0.9 fixed the core lifecycle problems:
 - persistent slot-28 lifecycle hook survives pause/menu page recreation;
 - no legacy per-frame reinjection storm.
 
-### V1.0C configurable test branch
+### V1.0D configurable test branch
 
 Branch: `dev/v1.0-configurable-hud`
 
-V1.0C adds configuration through `plugins/ControlDynamicHUD.ini`.
+V1.0D adds configuration through `plugins/ControlDynamicHUD.ini`.
 
 Currently configurable:
 
@@ -34,7 +34,7 @@ Every HUD element that the mod currently hides has its own configurable hide del
 
 The default Show HUD key is **F1**. The hotkey is detected natively from the HUD update path, so it does not depend on Coherent receiving function-key keyboard events. Pressing it forces every HUD element managed by the mod visible for a configurable duration, then each element resumes its normal independent timer.
 
-The crosshair now latches its hidden exploration state, so temporary HUD recreation during jumping no longer restarts the hide delay.
+The crosshair is now driven by Control's real native `onPlayerAimChanged(bool)` event plus combat state, rather than treating generic `PLAYER_MODE_ACTION` as aiming. This prevents normal jumps from reviving the crosshair while preserving it for actual aiming and combat.
 
 The Ground Slam targeting circle can be suppressed natively by redirecting the current-build `slam_target_show` event to `slam_target_hide`. The patch is signature-based and fail-open if the path is already modified or unsupported.
 
@@ -148,7 +148,7 @@ The important current-build findings are:
 
 ## Roadmap
 
-- validate V1.0C jump-stable crosshair and Ground Slam circle suppression;
+- validate V1.0D real-aim crosshair behavior and Ground Slam circle suppression;
 - validate the hardened Expedition forced-modifier behavior;
 - add configurable behavior for additional HUD elements where safe;
 - optional in-game configuration overlay later;
