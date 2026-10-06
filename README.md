@@ -15,11 +15,11 @@ V0.9 fixed the core lifecycle problems:
 - persistent slot-28 lifecycle hook survives pause/menu page recreation;
 - no legacy per-frame reinjection storm.
 
-### V1.0B configurable test branch
+### V1.0C configurable test branch
 
 Branch: `dev/v1.0-configurable-hud`
 
-V1.0B adds configuration through `plugins/ControlDynamicHUD.ini`.
+V1.0C adds configuration through `plugins/ControlDynamicHUD.ini`.
 
 Currently configurable:
 
@@ -27,11 +27,16 @@ Currently configurable:
 - Mission log
 - Crosshair
 - Expedition forced-modifier panel
+- Ground Slam targeting circle
 - global **Show HUD** hotkey
 
 Every HUD element that the mod currently hides has its own configurable hide delay and fade duration.
 
 The default Show HUD key is **F1**. The hotkey is detected natively from the HUD update path, so it does not depend on Coherent receiving function-key keyboard events. Pressing it forces every HUD element managed by the mod visible for a configurable duration, then each element resumes its normal independent timer.
+
+The crosshair now latches its hidden exploration state, so temporary HUD recreation during jumping no longer restarts the hide delay.
+
+The Ground Slam targeting circle can be suppressed natively by redirecting the current-build `slam_target_show` event to `slam_target_hide`. The patch is signature-based and fail-open if the path is already modified or unsupported.
 
 ## Installation
 
@@ -116,6 +121,13 @@ HideDelayMs=2000
 FadeDurationMs=300
 ```
 
+### Ground Slam target circle
+
+```ini
+[GroundSlam]
+HideTargetCircle=1
+```
+
 All timing values are in milliseconds.
 
 ## Technical notes
@@ -136,7 +148,7 @@ The important current-build findings are:
 
 ## Roadmap
 
-- validate V1.0B native hotkey, INI settings and Expedition behavior;
+- validate V1.0C jump-stable crosshair and Ground Slam circle suppression;
 - validate the hardened Expedition forced-modifier behavior;
 - add configurable behavior for additional HUD elements where safe;
 - optional in-game configuration overlay later;
