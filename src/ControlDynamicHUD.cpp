@@ -63,72 +63,7 @@ static constexpr u32 kCoherentCheckSum = 0x00323A4A;
 static constexpr uptr kExecuteScriptRva = 0xDBD00;
 static constexpr uptr kViewPageOffset = 0xA8;
 
-static const char kHealthScript[] = R"JS(
-(function(){
- if(window.__ControlDynamicHUDHealth)return;
- window.__ControlDynamicHUDHealth={version:5};
- var COMBAT=0,THRESHOLD=1.0,FADE=2000,VISIBLE_OPACITY=0.8;
- var hpbar=null,fill=null,fillObs=null,hideTimer=0,shown=true,playerMode=1,domObs=null;
- function ensureStyle(){
-  if(document.getElementById('cdh-health-style'))return;
-  var s=document.createElement('style');s.id='cdh-health-style';
-  s.textContent='.health-bar:not(.health-bar--hidden){transition:opacity 300ms var(--easing);}'
-   +'.health-bar[data-cdh-health-hidden="0"]:not(.health-bar--hidden){opacity:'+VISIBLE_OPACITY+';}'
-   +'.health-bar[data-cdh-health-hidden="1"]:not(.health-bar--hidden){opacity:0;}'
-   +'.health-bar--hidden{opacity:0!important;}';
-  (document.head||document.documentElement).appendChild(s);
- }
- function setHidden(v){
-  if(!hpbar)return;
-  hpbar.setAttribute('data-cdh-health-hidden',v?'1':'0');
-  shown=!v;
- }
- function clearHide(){if(hideTimer){clearTimeout(hideTimer);hideTimer=0;}}
- function healthPercent(){
-  if(!fill)return 1;
-  var ow=fill.offsetWidth;if(!ow)return 1;
-  return fill.getBoundingClientRect().width/ow;
- }
- function update(){
-  if(!hpbar||!fill||!hpbar.isConnected||!fill.isConnected){bind();return;}
-  var should=(healthPercent()<THRESHOLD)||(playerMode===COMBAT);
-  if(should){clearHide();if(!shown)setHidden(false);}
-  else if(shown&&!hideTimer){
-   hideTimer=setTimeout(function(){hideTimer=0;if(hpbar&&hpbar.isConnected)setHidden(true);},FADE);
-  }
- }
- function bind(){
-  var b=document.querySelector('.health-bar');
-  var f=document.querySelector('.health-bar__fill');
-  if(!b||!f)return false;
-  if(b===hpbar&&f===fill&&b.isConnected&&f.isConnected)return true;
-  clearHide();if(fillObs){fillObs.disconnect();fillObs=null;}
-  hpbar=b;fill=f;shown=true;setHidden(false);
-  fillObs=new MutationObserver(function(){update();});
-  fillObs.observe(fill,{attributes:true,attributeFilter:['style']});
-  update();return true;
- }
- var attempts=0;
- function boot(){
-  if(!document.documentElement||!window.engine||!window.g_HUDMode){
-   if(++attempts<100)setTimeout(boot,100);
-   return;
-  }
-  if(window.g_runtimeInterfaceOptions&&g_runtimeInterfaceOptions.m_bPlayerStatsEnabled===false)return;
-  ensureStyle();
-  playerMode=g_HUDMode.m_iPlayerMode;
-  engine.addModelChangeListener(g_HUDMode,'m_iPlayerMode',function(){
-   playerMode=g_HUDMode.m_iPlayerMode;update();
-  });
-  domObs=new MutationObserver(function(){
-   if(!hpbar||!fill||!hpbar.isConnected||!fill.isConnected)bind();
-  });
-  domObs.observe(document.documentElement,{childList:true,subtree:true});
-  bind();
- }
- boot();
-})();
-)JS";
+static const char kHealthScript[] = "window.__ControlDynamicHUDExecuteScriptProbe=1;";
 
 static inline void* get_peb() { void* peb; __asm__ __volatile__("movq %%gs:0x60, %0" : "=r"(peb)); return peb; }
 static u16 rd16(const void* p){ return *(const volatile u16*)p; }
@@ -251,7 +186,7 @@ static void WINAPI HookReady(void* self){
 
     if(view&&page&&g_executeScript){
         g_executeScript(view,kHealthScript,nullptr);
-        log_line("Dynamic health script injected.");
+        log_line("Minimal ExecuteScript probe injected.");
         restore_ready_hook();
     } else if(n>=64){
         log_line("Ready probe cap reached without an injectable View; restoring original vtable.");
@@ -312,7 +247,7 @@ static bool install_hook(WinApi& api,uptr target){
     DWORD dummy=0;api.VirtualProtect((void*)target,stolen,old,&dummy);api.FlushInstructionCache((HANDLE)(uptr)-1,(void*)target,stolen);return true;
 }
 
-extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 5;}
+extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 51;}
 extern "C" __declspec(dllexport) void* CDH_RelocAnchor=(void*)&CDH_Version;
 
 extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
@@ -321,7 +256,7 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     g_FlushInstructionCache=api.FlushInstructionCache;
     g_WriteFile=api.WriteFile;g_log=api.CreateFileW(L"plugins\\ControlDynamicHUD.log",GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
     if(!g_log||(uptr)g_log==INVALID_HANDLE_VALUE_U)return 1;
-    log_line("Control Dynamic HUD V0.5 HEALTH-ONLY TEST");log_line("Mode: native one-shot bridge + dynamic health bar only");
+    log_line("Control Dynamic HUD V0.5A EXECUTESCRIPT PROBE");log_line("Mode: native one-shot bridge + minimal ExecuteScript probe only");
     log_cstr("Executable: ");log_wide(first_module_name());log_bytes("\r\n",2);void* exe=first_module_base();log_cstr("Executable base: ");log_hex((uptr)exe);log_bytes("\r\n",2);
     void* coh=find_module("coherentuigt.dll");log_cstr("CoherentUIGT.dll: ");if(coh){log_hex((uptr)coh);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
     void* ui=find_module("ui_rmdwin10_f.dll");log_cstr("ui_rmdwin10_f.dll: ");if(ui){log_hex((uptr)ui);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
