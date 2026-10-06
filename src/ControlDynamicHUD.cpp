@@ -93,6 +93,8 @@ struct Config {
     bool expeditionEnabled;
     u32 expeditionHideDelayMs;
     u32 expeditionFadeDurationMs;
+
+    bool hideGroundSlamTargetCircle;
 };
 static Config g_cfg{};
 static char g_configScript[2048];
@@ -126,7 +128,7 @@ static const char kSuiteScript[] = R"JS(
  var playerMode=1,hudVisible=true,active=true;
  var hp={bar:null,fill:null,obs:null,timer:0,shown:true};
  var mission={map:null,log:null,obs:null,timer:0,shown:true};
- var cross={el:null,timer:0,shown:true};
+ var cross={el:null,timer:0,shown:true,hideLatched:false};
  var expedition={el:null,timer:0,shown:true};
  var resumeTimer=0,heartbeat=0,diagTimer=0,rebindTimer=0,forceTimer=0,forceUntil=0;
 
@@ -255,11 +257,21 @@ static const char kSuiteScript[] = R"JS(
   if(!cross.el||!cross.el.isConnected){CDH.crosshair=false;scheduleRebind(100);return;}
   if(isForced()){clearTimer(cross);setCrossHidden(false);return;}
   var shouldHide=playerMode===MODE.ADVENTURING;
-  if(!shouldHide){clearTimer(cross);setCrossHidden(false);}
-  else if(cross.shown&&!cross.timer){
+  if(!shouldHide){
+   clearTimer(cross);cross.hideLatched=false;setCrossHidden(false);
+   return;
+  }
+  if(cross.hideLatched){
+   clearTimer(cross);setCrossHidden(true);
+   return;
+  }
+  if(cross.shown&&!cross.timer){
    cross.timer=setTimeout(function(){
     cross.timer=0;
-    if(active&&!isForced())setCrossHidden(true);
+    if(active&&!isForced()&&playerMode===MODE.ADVENTURING){
+     cross.hideLatched=true;
+     setCrossHidden(true);
+    }
    },CFG.crosshairHideDelayMs);
   }
  }
@@ -267,7 +279,11 @@ static const char kSuiteScript[] = R"JS(
   if(!active||!CFG.crosshairEnabled)return false;
   var e=document.querySelector('.awesome-crosshair');
   if(!e){cross.el=null;CDH.crosshair=false;return false;}
-  cross.el=e;cross.shown=!e.classList.contains('cdh-hide');CDH.crosshair=true;updateCrosshair();return true;
+  var changed=(e!==cross.el);
+  cross.el=e;cross.shown=!e.classList.contains('cdh-hide');CDH.crosshair=true;
+  if(changed&&cross.hideLatched&&playerMode===MODE.ADVENTURING&&!isForced())setCrossHidden(true);
+  else updateCrosshair();
+  return true;
  }
 
  function setExpeditionHidden(v){
@@ -357,6 +373,7 @@ static const char kSuiteScript[] = R"JS(
   forceTimer=setTimeout(function(){
    forceTimer=0;forceUntil=0;CDH.forceVisible=false;
    if(!active)return;
+   cross.hideLatched=false;
    updateHealth();onMapChanged();updateCrosshair();scheduleExpeditionHide();
   },CFG.showHudDurationMs);
   updateDiag();
@@ -565,6 +582,8 @@ static void load_config(WinApi& a){
     g_cfg.expeditionEnabled=a.GetPrivateProfileIntA("Expedition","Enabled",1,ini)!=0;
     g_cfg.expeditionHideDelayMs=clamp_u32(a.GetPrivateProfileIntA("Expedition","HideDelayMs",2000,ini),0,60000);
     g_cfg.expeditionFadeDurationMs=clamp_u32(a.GetPrivateProfileIntA("Expedition","FadeDurationMs",300,ini),0,10000);
+
+    g_cfg.hideGroundSlamTargetCircle=a.GetPrivateProfileIntA("GroundSlam","HideTargetCircle",1,ini)!=0;
 }
 static void build_config_script(){
     char* p=g_configScript;char* end=g_configScript+sizeof(g_configScript);
@@ -593,6 +612,61 @@ static void build_config_script(){
 static bool get_text(void* module,u8*& text,u32& size){
     u8* b=(u8*)module;if(!b||rd16(b)!=0x5A4D)return false;u32 e=rd32(b+0x3C);u8* nt=b+e;if(rd32(nt)!=0x4550)return false;u16 ns=rd16(nt+6),os=rd16(nt+20);u8* sec=nt+24+os;
     for(u16 i=0;i<ns;++i,sec+=40){ if(sec[0]=='.'&&sec[1]=='t'&&sec[2]=='e'&&sec[3]=='x'&&sec[4]=='t'){u32 vs=rd32(sec+8),va=rd32(sec+12);text=b+va;size=vs;return true;} } return false;
+}
+
+static const u8 kSlamShowPat[] = {
+0x48,0x8B,0x57,0x28,0x4C,0x8D,0x05,0,0,0,0,0x48,0x8B,0xCB,0xE8,0,0,0,0,0xC6,0x87,0xB4,0x01,0x00,0x00,0x01};
+static const char kSlamShowMask[] = "xxxxxxx????xxxx????xxxxxxx";
+
+static uptr scan_slam_show_path(void* exe,u32& count){
+    count=0;u8* t=nullptr;u32 sz=0;if(!get_text(exe,t,sz))return 0;
+    usize plen=sizeof(kSlamShowPat);uptr first=0;
+    for(u32 i=0;i+plen<=sz;++i){
+        bool ok=true;
+        for(usize j=0;j<plen;++j){
+            if(kSlamShowMask[j]=='x'&&t[i+j]!=kSlamShowPat[j]){ok=false;break;}
+        }
+        if(ok){if(!first)first=(uptr)(t+i);++count;i+=(u32)plen-1;}
+    }
+    return first;
+}
+
+static bool patch_ground_slam_target_circle(void* exe){
+    if(!g_cfg.hideGroundSlamTargetCircle)return true;
+    u32 count=0;uptr hit=scan_slam_show_path(exe,count);
+    log_cstr("Ground Slam target show signature matches: ");log_dec(count);
+    log_cstr(" first=");log_hex(hit);log_bytes("\r\n",2);
+    if(count!=1||!hit){
+        log_line("Ground Slam circle patch skipped: show path already modified or unsupported.");
+        return false;
+    }
+
+    u8* lea=(u8*)hit+4;
+    s32 oldDisp=*(s32*)(lea+3);
+    const char* show=(const char*)(lea+7+(s64)oldDisp);
+    const char* hide=show-0x18;
+    if(!streq_ascii(show,"slam_target_show")||!streq_ascii(hide,"slam_target_hide")){
+        log_line("Ground Slam circle patch skipped: event strings did not validate.");
+        return false;
+    }
+
+    s64 nd64=(s64)(uptr)hide-(s64)(uptr)(lea+7);
+    if(nd64<(s64)-2147483648LL||nd64>(s64)2147483647LL){
+        log_line("Ground Slam circle patch skipped: replacement displacement out of range.");
+        return false;
+    }
+    s32 newDisp=(s32)nd64;
+    DWORD old=0;
+    if(!g_VirtualProtect((void*)(lea+3),sizeof(s32),PAGE_EXECUTE_READWRITE,&old)){
+        log_line("Ground Slam circle patch skipped: VirtualProtect failed.");
+        return false;
+    }
+    *(s32*)(lea+3)=newDisp;
+    DWORD dummy=0;
+    g_VirtualProtect((void*)(lea+3),sizeof(s32),old,&dummy);
+    if(g_FlushInstructionCache)g_FlushInstructionCache((HANDLE)(uptr)-1,(void*)lea,7);
+    log_line("Ground Slam target circle disabled: slam_target_show redirected to slam_target_hide.");
+    return true;
 }
 
 static const u8 kFactoryPat[] = {
@@ -785,7 +859,7 @@ static bool install_hook(WinApi& api,uptr target){
     DWORD dummy=0;api.VirtualProtect((void*)target,stolen,old,&dummy);api.FlushInstructionCache((HANDLE)(uptr)-1,(void*)target,stolen);return true;
 }
 
-extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 101;}
+extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 102;}
 extern "C" __declspec(dllexport) void* CDH_RelocAnchor=(void*)&CDH_Version;
 
 extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
@@ -796,10 +870,11 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     load_config(api);g_showHudVk=parse_vk(g_cfg.showHudKey);build_config_script();
     g_WriteFile=api.WriteFile;g_log=api.CreateFileW(L"plugins\\ControlDynamicHUD.log",GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
     if(!g_log||(uptr)g_log==INVALID_HANDLE_VALUE_U)return 1;
-    log_line("Control Dynamic HUD V1.0B NATIVE HOTKEY TEST");log_line("Mode: persistent lifecycle + native Show HUD hotkey + stable expedition malus timer");
+    log_line("Control Dynamic HUD V1.0C RETICLE + SLAM TARGET TEST");log_line("Mode: persistent lifecycle + native hotkey + jump-stable crosshair + optional Ground Slam target suppression");
     log_cstr("Config: Enabled=");log_dec(g_cfg.enabled?1:0);log_cstr(" ShowHUDKey=");log_cstr(g_cfg.showHudKey);log_cstr(" VK=");log_hex(g_showHudVk);log_cstr(" ShowHUDDurationMs=");log_dec(g_cfg.showHudDurationMs);log_bytes("\r\n",2);
     if(!g_cfg.enabled){log_line("Mod disabled by INI; no hook installed.");return 1;}
     log_cstr("Executable: ");log_wide(first_module_name());log_bytes("\r\n",2);void* exe=first_module_base();log_cstr("Executable base: ");log_hex((uptr)exe);log_bytes("\r\n",2);
+    patch_ground_slam_target_circle(exe);
     void* coh=find_module("coherentuigt.dll");g_coherentBase=coh;log_cstr("CoherentUIGT.dll: ");if(coh){log_hex((uptr)coh);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
     void* ui=find_module("ui_rmdwin10_f.dll");log_cstr("ui_rmdwin10_f.dll: ");if(ui){log_hex((uptr)ui);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
     const char* pageGetViewName="?getView@Page@ui@@QEAAPEAVView@UIGT@Coherent@@XZ";
