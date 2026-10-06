@@ -1048,6 +1048,8 @@ static void WINAPI HookCrosshairUpdate(void* crosshair,void* a2,void* source){
     g_originalCrosshairUpdate(crosshair,a2,source);
 }
 
+static void write_abs_jump(u8* at,void* dst);
+
 static bool install_code_detour(WinApi& api,uptr target,void* hook,void** original,usize stolen){
     u8* tramp=(u8*)api.VirtualAlloc(nullptr,96,MEM_COMMIT|MEM_RESERVE,PAGE_EXECUTE_READWRITE);
     if(!tramp)return false;
