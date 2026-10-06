@@ -15,23 +15,23 @@ V0.9 fixed the core lifecycle problems:
 - persistent slot-28 lifecycle hook survives pause/menu page recreation;
 - no legacy per-frame reinjection storm.
 
-### V1.0A configurable test branch
+### V1.0B configurable test branch
 
 Branch: `dev/v1.0-configurable-hud`
 
-V1.0A adds configuration through `plugins/ControlDynamicHUD.ini`.
+V1.0B adds configuration through `plugins/ControlDynamicHUD.ini`.
 
 Currently configurable:
 
 - Health bar
 - Mission log
 - Crosshair
-- Expedition modifiers
+- Expedition forced-modifier panel
 - global **Show HUD** hotkey
 
 Every HUD element that the mod currently hides has its own configurable hide delay and fade duration.
 
-The default Show HUD key is **F1**. Pressing it forces every HUD element managed by the mod visible for a configurable duration, then each element resumes its normal independent timer.
+The default Show HUD key is **F1**. The hotkey is detected natively from the HUD update path, so it does not depend on Coherent receiving function-key keyboard events. Pressing it forces every HUD element managed by the mod visible for a configurable duration, then each element resumes its normal independent timer.
 
 ## Installation
 
@@ -107,7 +107,7 @@ HideDelayMs=1000
 FadeDurationMs=300
 ```
 
-### Expedition modifiers
+### Expedition forced-modifier panel
 
 ```ini
 [Expedition]
@@ -136,8 +136,8 @@ The important current-build findings are:
 
 ## Roadmap
 
-- validate V1.0A INI settings and F1 Show HUD;
-- finish Expedition behavior;
+- validate V1.0B native hotkey, INI settings and Expedition behavior;
+- validate the hardened Expedition forced-modifier behavior;
 - add configurable behavior for additional HUD elements where safe;
 - optional in-game configuration overlay later;
 - public V1.0 release after the configurable branch is validated.
