@@ -15,11 +15,11 @@ V0.9 fixed the core lifecycle problems:
 - persistent slot-28 lifecycle hook survives pause/menu page recreation;
 - no legacy per-frame reinjection storm.
 
-### V1.0J configurable test branch
+### V1.0K configurable test branch
 
 Branch: `dev/v1.0-configurable-hud`
 
-V1.0J adds configuration through `plugins/ControlDynamicHUD.ini`.
+V1.0K adds configuration through `plugins/ControlDynamicHUD.ini`.
 
 Currently configurable:
 
@@ -145,10 +145,9 @@ Both options are **off by default**. When either option is enabled, the plugin h
 [MultiLaunch]
 HideInputPrompts=1
 HideDelayMs=0
-FadeDurationMs=150
 ```
 
-V1.0F/V1.0G DOM targeting and the V1.0H JavaScript model-write path were rejected. V1.0I moves Multi Launch suppression fully native: the HUD's Launch block is read directly, the three MultiLaunchIndicator visibility bytes are used as the active-state signal, and the native InteractionMarkerData vector is modified after the game's HUD update. The exact audited layout is: HUD+0x168 Launch block; Multi Launch indicators at +0x88/+0x120/+0x1B8 with m_bHighlightVisible at +0x60; HUD+0x160 InteractionMarkersUIData; data vector at +0x10; InteractionMarkerData size 0x18; m_fButtonOpacity at +0x10.
+V1.0F/V1.0G DOM targeting, the V1.0H JavaScript model-write path, and the V1.0I interaction-marker opacity path were rejected. V1.0K now targets the three native MultiLaunchIndicator models directly. The current-build layout is HUD+0x168 -> Launch block; indicators at +0x88/+0x120/+0x1B8; each indicator's m_bHighlightVisible is at +0x60. After the game HUD update, the plugin forces those three visibility flags off after the configurable HideDelayMs. F1 temporarily suspends this suppression.
 
 All timing values are in milliseconds.
 
@@ -171,7 +170,7 @@ The important current-build findings are:
 ## Roadmap
 
 - V1.0D real-aim crosshair behavior validated;
-- validate V1.0I fully-native Multi Launch button-opacity override;
+- validate V1.0K direct MultiLaunchIndicator visibility suppression;
 - validate V1.0J safe main-menu removal with no remaining clickable/focusable hitbox;
 - validate the hardened Expedition forced-modifier behavior;
 - add configurable behavior for additional HUD elements where safe;
