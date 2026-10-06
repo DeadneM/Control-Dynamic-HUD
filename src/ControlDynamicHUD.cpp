@@ -111,7 +111,6 @@ struct Config {
 
     bool multiLaunchHideInputPrompts;
     u32 multiLaunchHideDelayMs;
-    u32 multiLaunchFadeDurationMs;
 
     bool mainMenuHideNewGame;
     bool mainMenuHideMissionSelect;
@@ -238,7 +237,7 @@ static const char kSuiteScript[] = R"JS(
   missionEnabled:1,missionInitialHideDelayMs:2000,missionAfterMapCloseHideDelayMs:3000,missionUpdateVisibleMs:7000,missionFadeDurationMs:300,missionShowInMap:1,
   crosshairEnabled:1,crosshairHideDelayMs:1000,crosshairFadeDurationMs:300,
   expeditionEnabled:1,expeditionHideDelayMs:2000,expeditionFadeDurationMs:300,
-  multiLaunchHideInputPrompts:1,multiLaunchHideDelayMs:0,multiLaunchFadeDurationMs:150
+  multiLaunchHideInputPrompts:1,multiLaunchHideDelayMs:0
  };
  var CDH=window.__ControlDynamicHUDSuite={
   version:'1.0K',health:false,mission:false,crosshair:false,expedition:false,
@@ -724,8 +723,6 @@ static void load_config(WinApi& a){
 
     g_cfg.multiLaunchHideInputPrompts=a.GetPrivateProfileIntA("MultiLaunch","HideInputPrompts",1,ini)!=0;
     g_cfg.multiLaunchHideDelayMs=clamp_u32(a.GetPrivateProfileIntA("MultiLaunch","HideDelayMs",0,ini),0,60000);
-    g_cfg.multiLaunchFadeDurationMs=clamp_u32(a.GetPrivateProfileIntA("MultiLaunch","FadeDurationMs",150,ini),0,10000);
-
     g_cfg.mainMenuHideNewGame=a.GetPrivateProfileIntA("MainMenu","HideNewGame",0,ini)!=0;
     g_cfg.mainMenuHideMissionSelect=a.GetPrivateProfileIntA("MainMenu","HideMissionSelect",0,ini)!=0;
 }
@@ -753,7 +750,6 @@ static void build_config_script(){
     p=app(p,end,",expeditionFadeDurationMs:");p=app_u32(p,end,g_cfg.expeditionFadeDurationMs);
     p=app(p,end,",multiLaunchHideInputPrompts:");p=app_u32(p,end,g_cfg.multiLaunchHideInputPrompts?1:0);
     p=app(p,end,",multiLaunchHideDelayMs:");p=app_u32(p,end,g_cfg.multiLaunchHideDelayMs);
-    p=app(p,end,",multiLaunchFadeDurationMs:");p=app_u32(p,end,g_cfg.multiLaunchFadeDurationMs);
     p=app(p,end,"};");
 
     char* m=g_menuConfigScript;char* mend=g_menuConfigScript+sizeof(g_menuConfigScript);
