@@ -15,11 +15,11 @@ V0.9 fixed the core lifecycle problems:
 - persistent slot-28 lifecycle hook survives pause/menu page recreation;
 - no legacy per-frame reinjection storm.
 
-### V1.0F configurable test branch
+### V1.0H configurable test branch
 
 Branch: `dev/v1.0-configurable-hud`
 
-V1.0F adds configuration through `plugins/ControlDynamicHUD.ini`.
+V1.0H adds configuration through `plugins/ControlDynamicHUD.ini`.
 
 Currently configurable:
 
@@ -28,7 +28,7 @@ Currently configurable:
 - Crosshair
 - Expedition forced-modifier panel
 - Ground Slam targeting circle
-- Multi Launch held-object input glyphs
+- Multi Launch held-object input prompts (experimental)
 - global **Show HUD** hotkey
 
 Every HUD element that the mod currently hides has its own configurable hide delay and fade duration.
@@ -129,6 +129,16 @@ FadeDurationMs=300
 HideTargetCircle=1
 ```
 
+### Main menu cleanup
+
+```ini
+[MainMenu]
+HideNewGame=0
+HideMissionSelect=0
+```
+
+Both options are **off by default**. When either option is enabled, the plugin hooks the separate `menu.ui` page and hides only the matching main-menu entry.
+
 ### Multi Launch held-object input glyphs
 
 ```ini
@@ -138,7 +148,7 @@ HideDelayMs=0
 FadeDurationMs=150
 ```
 
-This targets the three current-game `g_multiLaunchIndicator1/2/3` models and hides only the keyboard/mouse/controller glyphs attached to held Multi Launch objects.
+V1.0F and V1.0G DOM-based approaches were rejected. V1.0H instead uses the three current-game `g_multiLaunchIndicator1/2/3` models only as the active-state signal, then directly forces `InteractionMarkerData.m_fButtonOpacity` to zero while Multi Launch is active.
 
 All timing values are in milliseconds.
 
@@ -161,7 +171,8 @@ The important current-build findings are:
 ## Roadmap
 
 - V1.0D real-aim crosshair behavior validated;
-- validate V1.0F Multi Launch held-object input-glyph suppression;
+- validate V1.0H direct Multi Launch button-opacity override;
+- validate optional main-menu cleanup when explicitly enabled;
 - validate the hardened Expedition forced-modifier behavior;
 - add configurable behavior for additional HUD elements where safe;
 - optional in-game configuration overlay later;
