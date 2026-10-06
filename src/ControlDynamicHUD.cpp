@@ -135,7 +135,7 @@ static const char kSuiteScript[] = R"JS(
  var mission={map:null,log:null,obs:null,timer:0,shown:true};
  var cross={el:null,timer:0,shown:true,hideLatched:false};
  var expedition={el:null,timer:0,shown:true};
- var multiLaunch={timer:0,tagged:[]};
+ var multiLaunch={timer:0,tagged:[],bindingMatches:0};
  var resumeTimer=0,heartbeat=0,diagTimer=0,rebindTimer=0,forceTimer=0,forceUntil=0;
 
  function isForced(){return forceUntil>Date.now();}
@@ -338,6 +338,13 @@ static const char kSuiteScript[] = R"JS(
   if(window.g_multiLaunchIndicator3)a.push(g_multiLaunchIndicator3);
   return a;
  }
+ function multiLaunchActive(){
+  var a=multiLaunchModels();
+  for(var i=0;i<a.length;i++){
+   if(a[i]&&a[i].m_bHighlightVisible!==false)return true;
+  }
+  return false;
+ }
  function clearMultiLaunchTags(){
   clearTimer(multiLaunch);
   for(var i=0;i<multiLaunch.tagged.length;i++){
@@ -345,68 +352,57 @@ static const char kSuiteScript[] = R"JS(
    if(e&&e.isConnected)e.removeAttribute('data-cdh-multilaunch-input-hidden');
   }
   multiLaunch.tagged=[];
+  multiLaunch.bindingMatches=0;
  }
- function isInputGlyphCandidate(e){
-  if(!e||e.nodeType!==1)return false;
-  var c=String(e.className||'').toLowerCase();
-  var id=String(e.id||'').toLowerCase();
-  var s=c+' '+id;
-  if(/input|key|keyboard|mouse|gamepad|controller|button|prompt|glyph|binding|control/.test(s))return true;
-  var tag=String(e.tagName||'').toLowerCase();
-  return tag==='img'||tag==='svg';
+ function bindingText(e){
+  if(!e||!e.attributes)return '';
+  var out='';
+  for(var i=0;i<e.attributes.length;i++){
+   var a=e.attributes[i];
+   out+=' '+String(a.name||'')+'='+String(a.value||'');
+  }
+  return out.toLowerCase();
  }
- function findIndicatorRoots(transform){
-  var out=[];
-  if(!transform)return out;
-  var all=document.querySelectorAll('[style]');
-  for(var i=0;i<all.length;i++){
-   var e=all[i],st=String(e.getAttribute('style')||'');
-   if(st.indexOf(transform)!==-1||String(e.style.transform||'')===transform)out.push(e);
-  }
-  return out;
- }
- function tagInputGlyphsUnder(root){
-  if(!root)return;
-  var nodes=root.querySelectorAll('*');
-  var found=0;
-  for(var i=0;i<nodes.length;i++){
-   var e=nodes[i];
-   if(isInputGlyphCandidate(e)){
-    e.setAttribute('data-cdh-multilaunch-input-hidden','1');
-    multiLaunch.tagged.push(e);found++;
-   }
-  }
-  // Fallback for the compact Multi Launch indicator layout:
-  // keep the positioned root/reticle and hide only small trailing children.
-  if(!found&&root.children&&root.children.length>1){
-   for(var j=1;j<root.children.length;j++){
-    var ch=root.children[j];
-    ch.setAttribute('data-cdh-multilaunch-input-hidden','1');
-    multiLaunch.tagged.push(ch);
-   }
-  }
+ function isInteractionButtonBinding(e){
+  var t=bindingText(e);
+  if(t.indexOf('m_fbuttonopacity')!==-1)return true;
+  if(t.indexOf('buttonopacity')!==-1)return true;
+  var c=(String(e.className||'')+' '+String(e.id||'')).toLowerCase();
+  return /interaction[^ ]*(button|prompt)|(button|prompt)[^ ]*interaction/.test(c);
  }
  function applyMultiLaunchPromptHide(){
   clearMultiLaunchTags();
-  if(!active||!CFG.multiLaunchHideInputPrompts||isForced())return;
-  var models=multiLaunchModels();
-  for(var i=0;i<models.length;i++){
-   var m=models[i];
-   if(!m||m.m_bHighlightVisible===false)continue;
-   var roots=findIndicatorRoots(String(m.m_strHighlightObjectTransform||''));
-   for(var r=0;r<roots.length;r++)tagInputGlyphsUnder(roots[r]);
+  if(!active||!CFG.multiLaunchHideInputPrompts||isForced()||!multiLaunchActive())return;
+
+  var all=document.querySelectorAll('*');
+  for(var i=0;i<all.length;i++){
+   var e=all[i];
+   if(!isInteractionButtonBinding(e))continue;
+   e.setAttribute('data-cdh-multilaunch-input-hidden','1');
+   multiLaunch.tagged.push(e);
   }
+  multiLaunch.bindingMatches=multiLaunch.tagged.length;
  }
  function updateMultiLaunchPrompts(){
-  if(!CFG.multiLaunchHideInputPrompts){clearMultiLaunchTags();return;}
-  if(isForced()){clearMultiLaunchTags();return;}
+  if(!CFG.multiLaunchHideInputPrompts||!multiLaunchActive()){
+   clearMultiLaunchTags();
+   return;
+  }
+  if(isForced()){
+   clearMultiLaunchTags();
+   return;
+  }
   clearTimer(multiLaunch);
-  if(CFG.multiLaunchHideDelayMs===0){applyMultiLaunchPromptHide();return;}
+  if(CFG.multiLaunchHideDelayMs===0){
+   applyMultiLaunchPromptHide();
+   return;
+  }
   multiLaunch.timer=setTimeout(function(){
    multiLaunch.timer=0;
-   if(active&&!isForced())applyMultiLaunchPromptHide();
+   if(active&&!isForced()&&multiLaunchActive())applyMultiLaunchPromptHide();
   },CFG.multiLaunchHideDelayMs);
  }
+
 
  function rebind(){
   rebindTimer=0;
@@ -453,6 +449,7 @@ static const char kSuiteScript[] = R"JS(
    (CFG.crosshairEnabled&&(!cross.el||!cross.el.isConnected))||
    (CFG.expeditionEnabled&&(!expedition.el||!expedition.el.isConnected));
   if(needs)scheduleRebind(0);
+  if(CFG.multiLaunchHideInputPrompts&&multiLaunchActive()&&!isForced())applyMultiLaunchPromptHide();
  }
 
  function forceShowHUD(){
@@ -480,9 +477,9 @@ static const char kSuiteScript[] = R"JS(
   if(!CFG.diagnostics)return;
   var p=document.getElementById('cdh-diagnostic');if(!p)return;
   p.textContent=
-   'Control Dynamic HUD v1.0F configurable suite\n'
+   'Control Dynamic HUD v1.0G configurable suite\n'
   +'HUD '+yes(hudVisible)+' | active '+yes(active)+' | force '+yes(isForced())+' | aim '+yes(isAiming)+' | key '+CFG.showHudKey+'\n'
-  +'health '+yes(CDH.health)+' | mission '+yes(CDH.mission)+' | crosshair '+yes(CDH.crosshair)+' | expedition '+yes(CDH.expedition)+' | multiLaunchModels '+multiLaunchModels().length+'\n'
+  +'health '+yes(CDH.health)+' | mission '+yes(CDH.mission)+' | crosshair '+yes(CDH.crosshair)+' | expedition '+yes(CDH.expedition)+' | multiLaunch '+yes(multiLaunchActive())+' bindings '+multiLaunch.bindingMatches+'\n'
   +'ammo '+yes(!!document.querySelector('.awesome-crosshair--ammo'))+' | enemyHP '+yes(!!document.querySelector('.enemy-health-container'))+' | energy '+yes(!!document.querySelector('.ability-resource-bar'))+'\n'
   +'pickup '+yes(!!document.querySelector('.pickup-notifications-container'))+' | interaction '+yes(!!document.querySelector('.interaction-marker-container'))+' | threat '+yes(!!document.querySelector('.threat-indicators'))+
    (CDH.lastError?'\nERR '+CDH.lastError:'');
@@ -977,7 +974,7 @@ static bool install_hook(WinApi& api,uptr target){
     DWORD dummy=0;api.VirtualProtect((void*)target,stolen,old,&dummy);api.FlushInstructionCache((HANDLE)(uptr)-1,(void*)target,stolen);return true;
 }
 
-extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 105;}
+extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 106;}
 extern "C" __declspec(dllexport) void* CDH_RelocAnchor=(void*)&CDH_Version;
 
 extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
@@ -988,7 +985,7 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     load_config(api);g_showHudVk=parse_vk(g_cfg.showHudKey);build_config_script();
     g_WriteFile=api.WriteFile;g_log=api.CreateFileW(L"plugins\\ControlDynamicHUD.log",GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
     if(!g_log||(uptr)g_log==INVALID_HANDLE_VALUE_U)return 1;
-    log_line("Control Dynamic HUD V1.0F MULTI-LAUNCH INPUT ICON TEST");log_line("Mode: validated crosshair + native hotkey + Multi Launch input-glyph suppression + Ground Slam target suppression");
+    log_line("Control Dynamic HUD V1.0G MULTI-LAUNCH BUTTON BINDING TEST");log_line("Mode: validated crosshair + native hotkey + m_fButtonOpacity binding suppression during Multi Launch + Ground Slam target suppression");
     log_cstr("Config: Enabled=");log_dec(g_cfg.enabled?1:0);log_cstr(" ShowHUDKey=");log_cstr(g_cfg.showHudKey);log_cstr(" VK=");log_hex(g_showHudVk);log_cstr(" ShowHUDDurationMs=");log_dec(g_cfg.showHudDurationMs);log_bytes("\r\n",2);
     if(!g_cfg.enabled){log_line("Mod disabled by INI; no hook installed.");return 1;}
     log_cstr("Executable: ");log_wide(first_module_name());log_bytes("\r\n",2);void* exe=first_module_base();log_cstr("Executable base: ");log_hex((uptr)exe);log_bytes("\r\n",2);
