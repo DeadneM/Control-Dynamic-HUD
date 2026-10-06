@@ -41,21 +41,28 @@ using FnVirtualProtect = BOOL (WINAPI*)(LPVOID,usize,DWORD,DWORD*);
 using FnFlushInstructionCache = BOOL (WINAPI*)(HANDLE,LPCVOID,usize);
 using FnGetPrivateProfileIntA = u32 (WINAPI*)(const char*,const char*,s32,const char*);
 using FnGetPrivateProfileStringA = DWORD (WINAPI*)(const char*,const char*,const char*,char*,DWORD,const char*);
+using FnGetAsyncKeyState = short (WINAPI*)(int);
 
 typedef void* (WINAPI *FactoryFn)(void*, void*, void*, void*);
 typedef void* (WINAPI *PageGetViewFn)(void*);
 typedef void (WINAPI *ExecuteScriptFn)(void*, const char*, const char*);
 typedef void (WINAPI *ReadyFn)(void*);
+typedef void (WINAPI *UpdateFn)(void*);
 
 static HANDLE g_log = nullptr;
 static FnWriteFile g_WriteFile = nullptr;
 static FactoryFn g_originalFactory = nullptr;
 static PageGetViewFn g_pageGetView = nullptr;
 static ReadyFn g_originalReady = nullptr;
+static UpdateFn g_originalUpdate = nullptr;
 static void* g_coherentBase = nullptr;
 static uptr* g_readyEntry = nullptr;
+static uptr* g_updateEntry = nullptr;
 static FnVirtualProtect g_VirtualProtect = nullptr;
 static FnFlushInstructionCache g_FlushInstructionCache = nullptr;
+static FnGetAsyncKeyState g_GetAsyncKeyState = nullptr;
+static u32 g_showHudVk = 0;
+static bool g_showHudKeyDown = false;
 static volatile u32 g_factoryCalls = 0;
 static volatile u32 g_readyCalls = 0;
 
@@ -97,6 +104,10 @@ static constexpr uptr kPublicViewVtableRva = 0x270780;
 static constexpr uptr kExecuteScriptRva = 0x82870;
 static constexpr uptr kViewPageOffset = 0xA8;
 
+static const char kForceHudScript[] =
+"if(window.__ControlDynamicHUDSuite&&window.__ControlDynamicHUDSuite.forceShowHUD)"
+"window.__ControlDynamicHUDSuite.forceShowHUD();";
+
 static const char kSuiteScript[] = R"JS(
 (function(){
  if(window.__ControlDynamicHUDSuite)return;
@@ -108,7 +119,7 @@ static const char kSuiteScript[] = R"JS(
   expeditionEnabled:1,expeditionHideDelayMs:2000,expeditionFadeDurationMs:300
  };
  var CDH=window.__ControlDynamicHUDSuite={
-  version:'1.0A',health:false,mission:false,crosshair:false,expedition:false,
+  version:'1.0B',health:false,mission:false,crosshair:false,expedition:false,
   hudVisible:true,active:true,lastError:'',forceVisible:false
  };
  var MODE={COMBAT:0,ADVENTURING:1,STORY:2,ACTION:3,EXAMINE:4,HIDDEN:5};
@@ -116,7 +127,7 @@ static const char kSuiteScript[] = R"JS(
  var hp={bar:null,fill:null,obs:null,timer:0,shown:true};
  var mission={map:null,log:null,obs:null,timer:0,shown:true};
  var cross={el:null,timer:0,shown:true};
- var expedition={el:null,obs:null,timer:0,shown:true};
+ var expedition={el:null,timer:0,shown:true};
  var resumeTimer=0,heartbeat=0,diagTimer=0,rebindTimer=0,forceTimer=0,forceUntil=0;
 
  function isForced(){return forceUntil>Date.now();}
@@ -272,22 +283,20 @@ static const char kSuiteScript[] = R"JS(
    if(active&&!isForced())setExpeditionHidden(true);
   },CFG.expeditionHideDelayMs);
  }
- function onExpeditionChanged(){
-  if(!active||!CFG.expeditionEnabled)return;
-  if(!expedition.el||!expedition.el.isConnected){CDH.expedition=false;scheduleRebind(100);return;}
-  setExpeditionHidden(false);scheduleExpeditionHide();
- }
  function bindExpedition(){
   if(!active||!CFG.expeditionEnabled)return false;
   var e=document.querySelector('.expedition-hud > .expedition-mod-group');
   if(!e){expedition.el=null;CDH.expedition=false;return false;}
-  if(e!==expedition.el||!expedition.obs){
-   clearTimer(expedition);disconnectObserver(expedition);
+  if(e!==expedition.el){
+   clearTimer(expedition);
    expedition.el=e;expedition.shown=true;
-   expedition.obs=new MutationObserver(onExpeditionChanged);
-   expedition.obs.observe(e,{childList:true,subtree:true,characterData:true});
+   setExpeditionHidden(false);
+   scheduleExpeditionHide();
+  }else if(isForced()){
+   setExpeditionHidden(false);
   }
-  CDH.expedition=true;setExpeditionHidden(false);scheduleExpeditionHide();return true;
+  CDH.expedition=true;
+  return true;
  }
 
  function rebind(){
@@ -312,7 +321,7 @@ static const char kSuiteScript[] = R"JS(
   if(resumeTimer){clearTimeout(resumeTimer);resumeTimer=0;}
   if(rebindTimer){clearTimeout(rebindTimer);rebindTimer=0;}
   clearTimer(hp);clearTimer(mission);clearTimer(cross);clearTimer(expedition);
-  disconnectObserver(hp);disconnectObserver(mission);disconnectObserver(expedition);
+  disconnectObserver(hp);disconnectObserver(mission);
   hp.bar=null;hp.fill=null;mission.map=null;mission.log=null;cross.el=null;expedition.el=null;
   CDH.health=false;CDH.mission=false;CDH.crosshair=false;CDH.expedition=false;
   updateDiag();
@@ -352,17 +361,14 @@ static const char kSuiteScript[] = R"JS(
   },CFG.showHudDurationMs);
   updateDiag();
  }
- function keyMatches(e){
-  var want=String(CFG.showHudKey||'F1').toUpperCase();
-  return String(e.key||'').toUpperCase()===want||String(e.code||'').toUpperCase()===want;
- }
+ CDH.forceShowHUD=forceShowHUD;
 
  function yes(v){return v?'YES':'no';}
  function updateDiag(){
   if(!CFG.diagnostics)return;
   var p=document.getElementById('cdh-diagnostic');if(!p)return;
   p.textContent=
-   'Control Dynamic HUD v1.0A configurable suite\n'
+   'Control Dynamic HUD v1.0B configurable suite\n'
   +'HUD '+yes(hudVisible)+' | active '+yes(active)+' | force '+yes(isForced())+' | key '+CFG.showHudKey+'\n'
   +'health '+yes(CDH.health)+' | mission '+yes(CDH.mission)+' | crosshair '+yes(CDH.crosshair)+' | expedition '+yes(CDH.expedition)+'\n'
   +'ammo '+yes(!!document.querySelector('.awesome-crosshair--ammo'))+' | enemyHP '+yes(!!document.querySelector('.enemy-health-container'))+' | energy '+yes(!!document.querySelector('.ability-resource-bar'))+'\n'
@@ -409,8 +415,6 @@ static const char kSuiteScript[] = R"JS(
     updateDiag();
    });
   }
-  document.addEventListener('keydown',function(e){if(keyMatches(e))forceShowHUD();},true);
-
   startDiag();
   heartbeat=setInterval(heartbeatTick,1000);
   if(active)rebindBurst();
@@ -460,13 +464,15 @@ static void* resolve_export(void* module,const char* name,int depth){
     for(u32 i=0;i<nn;++i){const char* n=(const char*)(base+names[i]); if(!streq_ascii(n,name))continue; u32 r=funcs[ords[i]]; if(r>=er&&r<er+es)return resolve_forwarder((const char*)(base+r),depth); return base+r;} return nullptr;
 }
 
-struct WinApi { FnCreateFileW CreateFileW; FnWriteFile WriteFile; FnCloseHandle CloseHandle; FnVirtualAlloc VirtualAlloc; FnVirtualProtect VirtualProtect; FnFlushInstructionCache FlushInstructionCache; FnGetPrivateProfileIntA GetPrivateProfileIntA; FnGetPrivateProfileStringA GetPrivateProfileStringA; };
+struct WinApi { FnCreateFileW CreateFileW; FnWriteFile WriteFile; FnCloseHandle CloseHandle; FnVirtualAlloc VirtualAlloc; FnVirtualProtect VirtualProtect; FnFlushInstructionCache FlushInstructionCache; FnGetPrivateProfileIntA GetPrivateProfileIntA; FnGetPrivateProfileStringA GetPrivateProfileStringA; FnGetAsyncKeyState GetAsyncKeyState; };
 static bool init_api(WinApi& a){
     void* k=find_module("kernel32.dll"); if(!k)return false;
     a.CreateFileW=(FnCreateFileW)resolve_export(k,"CreateFileW"); a.WriteFile=(FnWriteFile)resolve_export(k,"WriteFile"); a.CloseHandle=(FnCloseHandle)resolve_export(k,"CloseHandle");
     a.VirtualAlloc=(FnVirtualAlloc)resolve_export(k,"VirtualAlloc"); a.VirtualProtect=(FnVirtualProtect)resolve_export(k,"VirtualProtect"); a.FlushInstructionCache=(FnFlushInstructionCache)resolve_export(k,"FlushInstructionCache");
     a.GetPrivateProfileIntA=(FnGetPrivateProfileIntA)resolve_export(k,"GetPrivateProfileIntA");
     a.GetPrivateProfileStringA=(FnGetPrivateProfileStringA)resolve_export(k,"GetPrivateProfileStringA");
+    void* u=find_module("user32.dll");
+    a.GetAsyncKeyState=u?(FnGetAsyncKeyState)resolve_export(u,"GetAsyncKeyState"):nullptr;
     return a.CreateFileW&&a.WriteFile&&a.CloseHandle&&a.VirtualAlloc&&a.VirtualProtect&&a.FlushInstructionCache&&a.GetPrivateProfileIntA&&a.GetPrivateProfileStringA;
 }
 
@@ -506,6 +512,25 @@ static void copy_key(char* dst,usize cap,const char* src){
         dst[o]=ok?c:'_';++o;
     }
     dst[o]=0;
+}
+static u32 parse_vk(const char* s){
+    if(!s||!s[0])return 0;
+    char b[16]{};usize n=0;
+    while(s[n]&&n<15){char c=s[n];b[n]=(c>='a'&&c<='z')?char(c-32):c;++n;}b[n]=0;
+    if(n==1){
+        if((b[0]>='A'&&b[0]<='Z')||(b[0]>='0'&&b[0]<='9'))return (u32)b[0];
+    }
+    if(b[0]=='F'&&n>=2&&n<=3){
+        u32 v=0;for(usize i=1;i<n;++i){if(b[i]<'0'||b[i]>'9')return 0;v=v*10+(u32)(b[i]-'0');}
+        if(v>=1&&v<=12)return 0x70u+(v-1);
+    }
+    if(streq_ascii(b,"INSERT"))return 0x2D;
+    if(streq_ascii(b,"HOME"))return 0x24;
+    if(streq_ascii(b,"END"))return 0x23;
+    if(streq_ascii(b,"PAGEUP"))return 0x21;
+    if(streq_ascii(b,"PAGEDOWN"))return 0x22;
+    if(streq_ascii(b,"DELETE"))return 0x2E;
+    return 0;
 }
 static char* app(char* p,char* end,const char* s){while(*s&&p<end-1)*p++=*s++;*p=0;return p;}
 static char* app_u32(char* p,char* end,u32 v){
@@ -597,6 +622,42 @@ static void restore_ready_hook(){
     g_readyEntry=nullptr;
 }
 
+static void restore_update_hook(){
+    if(!g_updateEntry||!g_originalUpdate||!g_VirtualProtect)return;
+    DWORD old=0;
+    if(g_VirtualProtect((void*)g_updateEntry,sizeof(uptr),PAGE_EXECUTE_READWRITE,&old)){
+        *g_updateEntry=(uptr)g_originalUpdate;
+        DWORD dummy=0;
+        g_VirtualProtect((void*)g_updateEntry,sizeof(uptr),old,&dummy);
+        if(g_FlushInstructionCache) g_FlushInstructionCache((HANDLE)(uptr)-1,(void*)g_updateEntry,sizeof(uptr));
+        log_line("HUD update hotkey hook restored.");
+    }
+    g_updateEntry=nullptr;
+}
+
+static void WINAPI HookUpdate(void* self){
+    if(g_originalUpdate) g_originalUpdate(self);
+    if(!g_GetAsyncKeyState||!g_showHudVk||!g_pageGetView)return;
+
+    bool down=(g_GetAsyncKeyState((int)g_showHudVk)&0x8000)!=0;
+    if(!down){g_showHudKeyDown=false;return;}
+    if(g_showHudKeyDown)return;
+    g_showHudKeyDown=true;
+
+    void* view=self?g_pageGetView(self):nullptr;
+    uptr viewVtable=view?rdptr(view):0;
+    uptr execute=viewVtable?rdptr((u8*)viewVtable+61u*sizeof(uptr)):0;
+    uptr expectedVtable=(uptr)g_coherentBase+kPublicViewVtableRva;
+    uptr expected=(uptr)g_coherentBase+kExecuteScriptRva;
+    if(!view||viewVtable!=expectedVtable||execute!=expected){
+        log_line("Show HUD hotkey pressed but current HUD View is not ready; ignored.");
+        return;
+    }
+
+    log_cstr("Show HUD hotkey pressed: ");log_cstr(g_cfg.showHudKey);log_bytes("\r\n",2);
+    ((ExecuteScriptFn)execute)(view,kForceHudScript,nullptr);
+}
+
 static void WINAPI HookReady(void* self){
     u32 n=++g_readyCalls;
     if(g_originalReady) g_originalReady(self);
@@ -639,6 +700,31 @@ static void WINAPI HookReady(void* self){
     log_line("Config + cumulative HUD suite injected for current binding context; slot-28 hook remains active.");
 }
 
+static bool install_update_hook(void* hud){
+    if(!hud||!g_VirtualProtect||!g_GetAsyncKeyState||!g_showHudVk)return false;
+    uptr vtbl=rdptr(hud);
+    if(!vtbl)return false;
+    uptr* entry=(uptr*)(vtbl+27u*sizeof(uptr));
+    uptr original=*entry;
+    if(!original)return false;
+
+    g_originalUpdate=(UpdateFn)original;
+    g_updateEntry=entry;
+    log_cstr("HUD update vtable entry[27] hotkey hook: ");log_hex((uptr)entry);
+    log_cstr(" original=");log_hex(original);log_bytes("\r\n",2);
+
+    DWORD old=0;
+    if(!g_VirtualProtect((void*)entry,sizeof(uptr),PAGE_EXECUTE_READWRITE,&old)){
+        g_updateEntry=nullptr;g_originalUpdate=nullptr;return false;
+    }
+    *entry=(uptr)&HookUpdate;
+    DWORD dummy=0;
+    g_VirtualProtect((void*)entry,sizeof(uptr),old,&dummy);
+    if(g_FlushInstructionCache)g_FlushInstructionCache((HANDLE)(uptr)-1,(void*)entry,sizeof(uptr));
+    log_line("Native Show HUD hotkey hook installed.");
+    return true;
+}
+
 static bool install_ready_hook(void* hud){
     if(!hud||!g_VirtualProtect)return false;
     uptr vtbl=rdptr(hud);
@@ -677,6 +763,13 @@ static void* WINAPI HookFactory(void* a,void* b,void* c,void* d){
         log_cstr("HUD vtable: ");log_hex(vtbl);log_bytes("\r\n",2);
         log_cstr("Initial HUD System*: ");log_hex((uptr)system);log_cstr(" pageIndex=");log_dec(pageIndex);log_bytes("\r\n",2);
         if(!g_readyEntry && !install_ready_hook(r)) log_line("FAIL-OPEN: could not install persistent ready hook.");
+        if(!g_updateEntry){
+            if(g_GetAsyncKeyState&&g_showHudVk){
+                if(!install_update_hook(r))log_line("Show HUD hotkey hook could not be installed.");
+            }else{
+                log_line("Show HUD native hotkey unavailable or key name unsupported.");
+            }
+        }
     }
     return r;
 }
@@ -692,18 +785,19 @@ static bool install_hook(WinApi& api,uptr target){
     DWORD dummy=0;api.VirtualProtect((void*)target,stolen,old,&dummy);api.FlushInstructionCache((HANDLE)(uptr)-1,(void*)target,stolen);return true;
 }
 
-extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 100;}
+extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 101;}
 extern "C" __declspec(dllexport) void* CDH_RelocAnchor=(void*)&CDH_Version;
 
 extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     if(reason!=DLL_PROCESS_ATTACH)return 1; WinApi api{};if(!init_api(api))return 1;
     g_VirtualProtect=api.VirtualProtect;
     g_FlushInstructionCache=api.FlushInstructionCache;
-    load_config(api);build_config_script();
+    g_GetAsyncKeyState=api.GetAsyncKeyState;
+    load_config(api);g_showHudVk=parse_vk(g_cfg.showHudKey);build_config_script();
     g_WriteFile=api.WriteFile;g_log=api.CreateFileW(L"plugins\\ControlDynamicHUD.log",GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
     if(!g_log||(uptr)g_log==INVALID_HANDLE_VALUE_U)return 1;
-    log_line("Control Dynamic HUD V1.0A CONFIGURABLE HUD TEST");log_line("Mode: persistent lifecycle + INI timers + F1 Show HUD + expedition fix");
-    log_cstr("Config: Enabled=");log_dec(g_cfg.enabled?1:0);log_cstr(" ShowHUDKey=");log_cstr(g_cfg.showHudKey);log_cstr(" ShowHUDDurationMs=");log_dec(g_cfg.showHudDurationMs);log_bytes("\r\n",2);
+    log_line("Control Dynamic HUD V1.0B NATIVE HOTKEY TEST");log_line("Mode: persistent lifecycle + native Show HUD hotkey + stable expedition malus timer");
+    log_cstr("Config: Enabled=");log_dec(g_cfg.enabled?1:0);log_cstr(" ShowHUDKey=");log_cstr(g_cfg.showHudKey);log_cstr(" VK=");log_hex(g_showHudVk);log_cstr(" ShowHUDDurationMs=");log_dec(g_cfg.showHudDurationMs);log_bytes("\r\n",2);
     if(!g_cfg.enabled){log_line("Mod disabled by INI; no hook installed.");return 1;}
     log_cstr("Executable: ");log_wide(first_module_name());log_bytes("\r\n",2);void* exe=first_module_base();log_cstr("Executable base: ");log_hex((uptr)exe);log_bytes("\r\n",2);
     void* coh=find_module("coherentuigt.dll");g_coherentBase=coh;log_cstr("CoherentUIGT.dll: ");if(coh){log_hex((uptr)coh);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
