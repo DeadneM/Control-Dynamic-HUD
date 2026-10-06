@@ -144,7 +144,8 @@ static const char kSuiteScript[] = R"JS(
   +'.mission-log-wrapper{transition:opacity '+CFG.missionFadeDurationMs+'ms var(--easing);}'
   +'.mission-log-wrapper.cdh-hide{opacity:0;}'
   +'.mission-log-wrapper.cdh-in-map{opacity:1!important;}'
-  +'.awesome-crosshair.cdh-hide{opacity:0;transition:opacity '+CFG.crosshairFadeDurationMs+'ms var(--easing);}'
+  +'.awesome-crosshair{transition:opacity '+CFG.crosshairFadeDurationMs+'ms var(--easing);}'
+  +'.awesome-crosshair[data-cdh-crosshair-hidden="1"]{opacity:0!important;}'
   +'.expedition-hud>.expedition-mod-group{transition:opacity '+CFG.expeditionFadeDurationMs+'ms var(--easing);}'
   +'.expedition-hud>.expedition-mod-group[data-cdh-expedition-hidden="1"]{opacity:0!important;}'
   +'#cdh-diagnostic{position:absolute;left:18px;top:18px;z-index:2147483647;'
@@ -250,7 +251,7 @@ static const char kSuiteScript[] = R"JS(
 
  function setCrossHidden(v){
   if(!cross.el||!cross.el.isConnected)return;
-  cross.el.classList.toggle('cdh-hide',v);cross.shown=!v;
+  cross.el.setAttribute('data-cdh-crosshair-hidden',v?'1':'0');cross.shown=!v;
  }
  function crosshairShouldShow(){
   return playerMode===MODE.COMBAT||isAiming;
@@ -288,7 +289,7 @@ static const char kSuiteScript[] = R"JS(
   var e=document.querySelector('.awesome-crosshair');
   if(!e){cross.el=null;CDH.crosshair=false;return false;}
   var changed=(e!==cross.el);
-  cross.el=e;cross.shown=!e.classList.contains('cdh-hide');CDH.crosshair=true;
+  cross.el=e;cross.shown=e.getAttribute('data-cdh-crosshair-hidden')!=='1';CDH.crosshair=true;
   if(changed&&cross.hideLatched&&!crosshairShouldShow()&&!isForced())setCrossHidden(true);
   else updateCrosshair();
   return true;
