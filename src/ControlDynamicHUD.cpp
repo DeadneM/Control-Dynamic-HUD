@@ -96,9 +96,9 @@ struct Config {
 
     bool hideGroundSlamTargetCircle;
 
-    bool telekinesisHideInputPrompt;
-    u32 telekinesisHideDelayMs;
-    u32 telekinesisFadeDurationMs;
+    bool multiLaunchHideInputPrompts;
+    u32 multiLaunchHideDelayMs;
+    u32 multiLaunchFadeDurationMs;
 };
 static Config g_cfg{};
 static char g_configScript[2048];
@@ -123,7 +123,7 @@ static const char kSuiteScript[] = R"JS(
   missionEnabled:1,missionInitialHideDelayMs:2000,missionAfterMapCloseHideDelayMs:3000,missionUpdateVisibleMs:7000,missionFadeDurationMs:300,missionShowInMap:1,
   crosshairEnabled:1,crosshairHideDelayMs:1000,crosshairFadeDurationMs:300,
   expeditionEnabled:1,expeditionHideDelayMs:2000,expeditionFadeDurationMs:300,
-  telekinesisHideInputPrompt:1,telekinesisHideDelayMs:0,telekinesisFadeDurationMs:150
+  multiLaunchHideInputPrompts:1,multiLaunchHideDelayMs:0,multiLaunchFadeDurationMs:150
  };
  var CDH=window.__ControlDynamicHUDSuite={
   version:'1.0B',health:false,mission:false,crosshair:false,expedition:false,
@@ -135,7 +135,7 @@ static const char kSuiteScript[] = R"JS(
  var mission={map:null,log:null,obs:null,timer:0,shown:true};
  var cross={el:null,timer:0,shown:true,hideLatched:false};
  var expedition={el:null,timer:0,shown:true};
- var telek={timer:0,active:false,hidden:false};
+ var multiLaunch={timer:0,tagged:[]};
  var resumeTimer=0,heartbeat=0,diagTimer=0,rebindTimer=0,forceTimer=0,forceUntil=0;
 
  function isForced(){return forceUntil>Date.now();}
@@ -154,8 +154,7 @@ static const char kSuiteScript[] = R"JS(
   +'.awesome-crosshair[data-cdh-crosshair-hidden="1"]{opacity:0!important;}'
   +'.expedition-hud>.expedition-mod-group{transition:opacity '+CFG.expeditionFadeDurationMs+'ms var(--easing);}'
   +'.expedition-hud>.expedition-mod-group[data-cdh-expedition-hidden="1"]{opacity:0!important;}'
-  +'.interaction-marker-container{transition:opacity '+CFG.telekinesisFadeDurationMs+'ms var(--easing);}'
-  +'html[data-cdh-telekinesis-prompt-hidden="1"] .interaction-marker-container{opacity:0!important;}'
+  +'[data-cdh-multilaunch-input-hidden="1"]{opacity:0!important;visibility:hidden!important;transition:opacity '+CFG.multiLaunchFadeDurationMs+'ms var(--easing);}'
   +'#cdh-diagnostic{position:absolute;left:18px;top:18px;z-index:2147483647;'
   +'font:15px monospace;color:white;background:rgba(0,0,0,.72);padding:10px 12px;'
   +'pointer-events:none;white-space:pre;line-height:1.25;max-width:760px;}';
@@ -332,45 +331,88 @@ static const char kSuiteScript[] = R"JS(
   return true;
  }
 
- function telekinesisIsActive(){
-  if(!window.g_launchIndicator)return false;
-  var stage=Number(g_launchIndicator.m_iLaunchStage||0);
-  return !!g_launchIndicator.m_bIsCharging||stage>0;
+ function multiLaunchModels(){
+  var a=[];
+  if(window.g_multiLaunchIndicator1)a.push(g_multiLaunchIndicator1);
+  if(window.g_multiLaunchIndicator2)a.push(g_multiLaunchIndicator2);
+  if(window.g_multiLaunchIndicator3)a.push(g_multiLaunchIndicator3);
+  return a;
  }
- function setTelekPromptHidden(v){
-  telek.hidden=!!v;
-  if(document.documentElement){
-   document.documentElement.setAttribute('data-cdh-telekinesis-prompt-hidden',v?'1':'0');
+ function clearMultiLaunchTags(){
+  clearTimer(multiLaunch);
+  for(var i=0;i<multiLaunch.tagged.length;i++){
+   var e=multiLaunch.tagged[i];
+   if(e&&e.isConnected)e.removeAttribute('data-cdh-multilaunch-input-hidden');
+  }
+  multiLaunch.tagged=[];
+ }
+ function isInputGlyphCandidate(e){
+  if(!e||e.nodeType!==1)return false;
+  var c=String(e.className||'').toLowerCase();
+  var id=String(e.id||'').toLowerCase();
+  var s=c+' '+id;
+  if(/input|key|keyboard|mouse|gamepad|controller|button|prompt|glyph|binding|control/.test(s))return true;
+  var tag=String(e.tagName||'').toLowerCase();
+  return tag==='img'||tag==='svg';
+ }
+ function findIndicatorRoots(transform){
+  var out=[];
+  if(!transform)return out;
+  var all=document.querySelectorAll('[style]');
+  for(var i=0;i<all.length;i++){
+   var e=all[i],st=String(e.getAttribute('style')||'');
+   if(st.indexOf(transform)!==-1||String(e.style.transform||'')===transform)out.push(e);
+  }
+  return out;
+ }
+ function tagInputGlyphsUnder(root){
+  if(!root)return;
+  var nodes=root.querySelectorAll('*');
+  var found=0;
+  for(var i=0;i<nodes.length;i++){
+   var e=nodes[i];
+   if(isInputGlyphCandidate(e)){
+    e.setAttribute('data-cdh-multilaunch-input-hidden','1');
+    multiLaunch.tagged.push(e);found++;
+   }
+  }
+  // Fallback for the compact Multi Launch indicator layout:
+  // keep the positioned root/reticle and hide only small trailing children.
+  if(!found&&root.children&&root.children.length>1){
+   for(var j=1;j<root.children.length;j++){
+    var ch=root.children[j];
+    ch.setAttribute('data-cdh-multilaunch-input-hidden','1');
+    multiLaunch.tagged.push(ch);
+   }
   }
  }
- function updateTelekinesisPrompt(){
-  if(!CFG.telekinesisHideInputPrompt){
-   clearTimer(telek);setTelekPromptHidden(false);return;
+ function applyMultiLaunchPromptHide(){
+  clearMultiLaunchTags();
+  if(!active||!CFG.multiLaunchHideInputPrompts||isForced())return;
+  var models=multiLaunchModels();
+  for(var i=0;i<models.length;i++){
+   var m=models[i];
+   if(!m||m.m_bHighlightVisible===false)continue;
+   var roots=findIndicatorRoots(String(m.m_strHighlightObjectTransform||''));
+   for(var r=0;r<roots.length;r++)tagInputGlyphsUnder(roots[r]);
   }
-  telek.active=telekinesisIsActive();
-  if(isForced()){
-   clearTimer(telek);setTelekPromptHidden(false);return;
-  }
-  if(!telek.active){
-   clearTimer(telek);setTelekPromptHidden(false);return;
-  }
-  if(telek.hidden)return;
-  if(CFG.telekinesisHideDelayMs===0){
-   setTelekPromptHidden(true);return;
-  }
-  if(!telek.timer){
-   telek.timer=setTimeout(function(){
-    telek.timer=0;
-    if(active&&!isForced()&&telekinesisIsActive())setTelekPromptHidden(true);
-   },CFG.telekinesisHideDelayMs);
-  }
+ }
+ function updateMultiLaunchPrompts(){
+  if(!CFG.multiLaunchHideInputPrompts){clearMultiLaunchTags();return;}
+  if(isForced()){clearMultiLaunchTags();return;}
+  clearTimer(multiLaunch);
+  if(CFG.multiLaunchHideDelayMs===0){applyMultiLaunchPromptHide();return;}
+  multiLaunch.timer=setTimeout(function(){
+   multiLaunch.timer=0;
+   if(active&&!isForced())applyMultiLaunchPromptHide();
+  },CFG.multiLaunchHideDelayMs);
  }
 
  function rebind(){
   rebindTimer=0;
   if(!active)return;
   addStyle();
-  bindHealth();bindMission();bindCrosshair();bindExpedition();updateTelekinesisPrompt();updateDiag();
+  bindHealth();bindMission();bindCrosshair();bindExpedition();updateMultiLaunchPrompts();updateDiag();
  }
  function scheduleRebind(ms){
   if(!active||rebindTimer)return;
@@ -387,11 +429,11 @@ static const char kSuiteScript[] = R"JS(
  function suspendHud(){
   if(resumeTimer){clearTimeout(resumeTimer);resumeTimer=0;}
   if(rebindTimer){clearTimeout(rebindTimer);rebindTimer=0;}
-  clearTimer(hp);clearTimer(mission);clearTimer(cross);clearTimer(expedition);clearTimer(telek);
+  clearTimer(hp);clearTimer(mission);clearTimer(cross);clearTimer(expedition);clearTimer(multiLaunch);
   disconnectObserver(hp);disconnectObserver(mission);
   hp.bar=null;hp.fill=null;mission.map=null;mission.log=null;cross.el=null;expedition.el=null;
   CDH.health=false;CDH.mission=false;CDH.crosshair=false;CDH.expedition=false;
-  setTelekPromptHidden(false);
+  clearMultiLaunchTags();
   updateDiag();
  }
  function resumeHud(){
@@ -416,8 +458,8 @@ static const char kSuiteScript[] = R"JS(
  function forceShowHUD(){
   if(!active)return;
   forceUntil=Date.now()+CFG.showHudDurationMs;CDH.forceVisible=true;
-  clearTimer(hp);clearTimer(mission);clearTimer(cross);clearTimer(expedition);clearTimer(telek);
-  setTelekPromptHidden(false);
+  clearTimer(hp);clearTimer(mission);clearTimer(cross);clearTimer(expedition);clearTimer(multiLaunch);
+  clearMultiLaunchTags();
   if(hp.bar)setHpHidden(false);
   if(mission.log)missionShow();
   if(cross.el)setCrossHidden(false);
@@ -427,7 +469,7 @@ static const char kSuiteScript[] = R"JS(
    forceTimer=0;forceUntil=0;CDH.forceVisible=false;
    if(!active)return;
    cross.hideLatched=false;
-   updateHealth();onMapChanged();updateCrosshair();scheduleExpeditionHide();updateTelekinesisPrompt();
+   updateHealth();onMapChanged();updateCrosshair();scheduleExpeditionHide();updateMultiLaunchPrompts();
   },CFG.showHudDurationMs);
   updateDiag();
  }
@@ -438,9 +480,9 @@ static const char kSuiteScript[] = R"JS(
   if(!CFG.diagnostics)return;
   var p=document.getElementById('cdh-diagnostic');if(!p)return;
   p.textContent=
-   'Control Dynamic HUD v1.0B configurable suite\n'
+   'Control Dynamic HUD v1.0F configurable suite\n'
   +'HUD '+yes(hudVisible)+' | active '+yes(active)+' | force '+yes(isForced())+' | aim '+yes(isAiming)+' | key '+CFG.showHudKey+'\n'
-  +'health '+yes(CDH.health)+' | mission '+yes(CDH.mission)+' | crosshair '+yes(CDH.crosshair)+' | expedition '+yes(CDH.expedition)+' | telek '+yes(telek.active)+'\n'
+  +'health '+yes(CDH.health)+' | mission '+yes(CDH.mission)+' | crosshair '+yes(CDH.crosshair)+' | expedition '+yes(CDH.expedition)+' | multiLaunchModels '+multiLaunchModels().length+'\n'
   +'ammo '+yes(!!document.querySelector('.awesome-crosshair--ammo'))+' | enemyHP '+yes(!!document.querySelector('.enemy-health-container'))+' | energy '+yes(!!document.querySelector('.ability-resource-bar'))+'\n'
   +'pickup '+yes(!!document.querySelector('.pickup-notifications-container'))+' | interaction '+yes(!!document.querySelector('.interaction-marker-container'))+' | threat '+yes(!!document.querySelector('.threat-indicators'))+
    (CDH.lastError?'\nERR '+CDH.lastError:'');
@@ -490,13 +532,16 @@ static const char kSuiteScript[] = R"JS(
     updateDiag();
    });
   }
-  if(window.g_launchIndicator){
-   engine.addModelChangeListener(g_launchIndicator,'m_iLaunchStage',function(){
-    updateTelekinesisPrompt();updateDiag();
-   });
-   engine.addModelChangeListener(g_launchIndicator,'m_bIsCharging',function(){
-    updateTelekinesisPrompt();updateDiag();
-   });
+  var ml=multiLaunchModels();
+  for(var mi=0;mi<ml.length;mi++){
+   (function(model){
+    engine.addModelChangeListener(model,'m_bHighlightVisible',function(){
+     updateMultiLaunchPrompts();updateDiag();
+    });
+    engine.addModelChangeListener(model,'m_strHighlightObjectTransform',function(){
+     updateMultiLaunchPrompts();updateDiag();
+    });
+   })(ml[mi]);
   }
   startDiag();
   heartbeat=setInterval(heartbeatTick,1000);
@@ -651,9 +696,9 @@ static void load_config(WinApi& a){
 
     g_cfg.hideGroundSlamTargetCircle=a.GetPrivateProfileIntA("GroundSlam","HideTargetCircle",1,ini)!=0;
 
-    g_cfg.telekinesisHideInputPrompt=a.GetPrivateProfileIntA("Telekinesis","HideInputPrompt",1,ini)!=0;
-    g_cfg.telekinesisHideDelayMs=clamp_u32(a.GetPrivateProfileIntA("Telekinesis","HideDelayMs",0,ini),0,60000);
-    g_cfg.telekinesisFadeDurationMs=clamp_u32(a.GetPrivateProfileIntA("Telekinesis","FadeDurationMs",150,ini),0,10000);
+    g_cfg.multiLaunchHideInputPrompts=a.GetPrivateProfileIntA("MultiLaunch","HideInputPrompts",1,ini)!=0;
+    g_cfg.multiLaunchHideDelayMs=clamp_u32(a.GetPrivateProfileIntA("MultiLaunch","HideDelayMs",0,ini),0,60000);
+    g_cfg.multiLaunchFadeDurationMs=clamp_u32(a.GetPrivateProfileIntA("MultiLaunch","FadeDurationMs",150,ini),0,10000);
 }
 static void build_config_script(){
     char* p=g_configScript;char* end=g_configScript+sizeof(g_configScript);
@@ -677,9 +722,9 @@ static void build_config_script(){
     p=app(p,end,",expeditionEnabled:");p=app_u32(p,end,g_cfg.expeditionEnabled?1:0);
     p=app(p,end,",expeditionHideDelayMs:");p=app_u32(p,end,g_cfg.expeditionHideDelayMs);
     p=app(p,end,",expeditionFadeDurationMs:");p=app_u32(p,end,g_cfg.expeditionFadeDurationMs);
-    p=app(p,end,",telekinesisHideInputPrompt:");p=app_u32(p,end,g_cfg.telekinesisHideInputPrompt?1:0);
-    p=app(p,end,",telekinesisHideDelayMs:");p=app_u32(p,end,g_cfg.telekinesisHideDelayMs);
-    p=app(p,end,",telekinesisFadeDurationMs:");p=app_u32(p,end,g_cfg.telekinesisFadeDurationMs);
+    p=app(p,end,",multiLaunchHideInputPrompts:");p=app_u32(p,end,g_cfg.multiLaunchHideInputPrompts?1:0);
+    p=app(p,end,",multiLaunchHideDelayMs:");p=app_u32(p,end,g_cfg.multiLaunchHideDelayMs);
+    p=app(p,end,",multiLaunchFadeDurationMs:");p=app_u32(p,end,g_cfg.multiLaunchFadeDurationMs);
     p=app(p,end,"};");
 }
 static bool get_text(void* module,u8*& text,u32& size){
@@ -932,7 +977,7 @@ static bool install_hook(WinApi& api,uptr target){
     DWORD dummy=0;api.VirtualProtect((void*)target,stolen,old,&dummy);api.FlushInstructionCache((HANDLE)(uptr)-1,(void*)target,stolen);return true;
 }
 
-extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 104;}
+extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 105;}
 extern "C" __declspec(dllexport) void* CDH_RelocAnchor=(void*)&CDH_Version;
 
 extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
@@ -943,7 +988,7 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     load_config(api);g_showHudVk=parse_vk(g_cfg.showHudKey);build_config_script();
     g_WriteFile=api.WriteFile;g_log=api.CreateFileW(L"plugins\\ControlDynamicHUD.log",GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
     if(!g_log||(uptr)g_log==INVALID_HANDLE_VALUE_U)return 1;
-    log_line("Control Dynamic HUD V1.0E TELEKINESIS PROMPT TEST");log_line("Mode: validated crosshair + native hotkey + telekinesis input-prompt suppression + Ground Slam target suppression");
+    log_line("Control Dynamic HUD V1.0F MULTI-LAUNCH INPUT ICON TEST");log_line("Mode: validated crosshair + native hotkey + Multi Launch input-glyph suppression + Ground Slam target suppression");
     log_cstr("Config: Enabled=");log_dec(g_cfg.enabled?1:0);log_cstr(" ShowHUDKey=");log_cstr(g_cfg.showHudKey);log_cstr(" VK=");log_hex(g_showHudVk);log_cstr(" ShowHUDDurationMs=");log_dec(g_cfg.showHudDurationMs);log_bytes("\r\n",2);
     if(!g_cfg.enabled){log_line("Mod disabled by INI; no hook installed.");return 1;}
     log_cstr("Executable: ");log_wide(first_module_name());log_bytes("\r\n",2);void* exe=first_module_base();log_cstr("Executable base: ");log_hex((uptr)exe);log_bytes("\r\n",2);
