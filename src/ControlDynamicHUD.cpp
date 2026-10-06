@@ -144,7 +144,7 @@ static const char kSuiteScript[] = R"JS(
   +'.mission-log-wrapper.cdh-in-map{opacity:1!important;}'
   +'.awesome-crosshair.cdh-hide{opacity:0;transition:opacity '+CFG.crosshairFadeDurationMs+'ms var(--easing);}'
   +'.expedition-hud>.expedition-mod-group{transition:opacity '+CFG.expeditionFadeDurationMs+'ms var(--easing);}'
-  +'.expedition-hud>.expedition-mod-group.cdh-hide{opacity:0!important;}'
+  +'.expedition-hud>.expedition-mod-group[data-cdh-expedition-hidden="1"]{opacity:0!important;}'
   +'#cdh-diagnostic{position:absolute;left:18px;top:18px;z-index:2147483647;'
   +'font:15px monospace;color:white;background:rgba(0,0,0,.72);padding:10px 12px;'
   +'pointer-events:none;white-space:pre;line-height:1.25;max-width:760px;}';
@@ -272,7 +272,7 @@ static const char kSuiteScript[] = R"JS(
 
  function setExpeditionHidden(v){
   if(!expedition.el||!expedition.el.isConnected)return;
-  expedition.el.classList.toggle('cdh-hide',v);expedition.shown=!v;
+  expedition.el.setAttribute('data-cdh-expedition-hidden',v?'1':'0');expedition.shown=!v;
  }
  function scheduleExpeditionHide(){
   if(!active||!CFG.expeditionEnabled||!expedition.el)return;
@@ -677,20 +677,20 @@ static void WINAPI HookReady(void* self){
     log_bytes("\r\n",2);
 
     if(!view||!viewPage||!viewVtable||!execute){
-        log_line("FAIL-OPEN: ready callback did not expose an injectable View; restoring lifecycle hook.");
-        restore_ready_hook();
+        log_line("FAIL-OPEN: ready callback did not expose an injectable View; restoring lifecycle hooks.");
+        restore_ready_hook();restore_update_hook();
         return;
     }
     if(viewVtable!=expectedVtable){
         log_cstr("FAIL-OPEN: public View vtable mismatch; expected ");log_hex(expectedVtable);
         log_cstr(" got ");log_hex(viewVtable);log_bytes("\r\n",2);
-        restore_ready_hook();
+        restore_ready_hook();restore_update_hook();
         return;
     }
     if(execute!=expected){
         log_cstr("FAIL-OPEN: public View vtable[61] mismatch; expected ");log_hex(expected);
         log_cstr(" got ");log_hex(execute);log_bytes("\r\n",2);
-        restore_ready_hook();
+        restore_ready_hook();restore_update_hook();
         return;
     }
 
