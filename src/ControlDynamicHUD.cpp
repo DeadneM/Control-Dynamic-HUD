@@ -132,12 +132,7 @@ static const char kMainMenuScript[] = R"JS(
  if(window.__ControlDynamicHUDMainMenu)return;
  var CFG=window.__CDH_MAINMENU_CONFIG||{hideNewGame:0,hideMissionSelect:0};
  if(!CFG.hideNewGame&&!CFG.hideMissionSelect)return;
- window.__ControlDynamicHUDMainMenu={version:'1.0I'};
-
- var style=document.createElement('style');
- style.id='cdh-mainmenu-style';
- style.textContent='[data-cdh-mainmenu-hidden="1"]{display:none!important;}';
- (document.head||document.documentElement).appendChild(style);
+ window.__ControlDynamicHUDMainMenu={version:'1.0J'};
 
  function norm(s){
   return String(s||'').toLowerCase()
@@ -151,29 +146,81 @@ static const char kMainMenuScript[] = R"JS(
   if(CFG.hideMissionSelect&&(t==='mission select'||t==='select mission'||t==='mission selection'||t==='selection de mission'))return 'mission';
   return '';
  }
- function topSameText(e,t){
-  var n=e,p=e&&e.parentElement;
-  for(var i=0;i<6&&p;i++,p=p.parentElement){
-   if(norm(p.textContent)!==t)break;
-   n=p;
+ function rowFor(e,t){
+  var n=e;
+  for(var i=0;i<8&&n&&n.parentElement;i++){
+   var p=n.parentElement;
+   var pt=norm(p.textContent);
+   if(pt===t){n=p;continue;}
+   if(p.children&&p.children.length>1)return n;
+   break;
   }
   return n;
  }
- function apply(){
+ function hardDisable(e,kind){
+  if(!e)return;
+  try{
+   e.setAttribute('data-cdh-mainmenu-disabled',kind);
+   e.setAttribute('aria-hidden','true');
+   e.setAttribute('aria-disabled','true');
+   e.setAttribute('tabindex','-1');
+   if('disabled' in e)e.disabled=true;
+   e.style.pointerEvents='none';
+   e.style.visibility='hidden';
+   e.style.display='none';
+  }catch(x){}
+ }
+ function removeTargets(){
   if(!document.body)return;
   var all=document.body.querySelectorAll('*');
+  var doomed=[];
   for(var i=0;i<all.length;i++){
    var e=all[i];
-   if(e.children&&e.children.length>8)continue;
-   var t=norm(e.textContent);
-   if(!targetKind(t))continue;
-   var row=topSameText(e,t);
-   if(row)row.setAttribute('data-cdh-mainmenu-hidden','1');
+   if(e.children&&e.children.length>10)continue;
+   var t=norm(e.textContent),kind=targetKind(t);
+   if(!kind)continue;
+   var row=rowFor(e,t);
+   if(!row)continue;
+   hardDisable(row,kind);
+   if(doomed.indexOf(row)===-1)doomed.push(row);
+  }
+  for(var j=0;j<doomed.length;j++){
+   var d=doomed[j];
+   try{if(d&&d.parentNode)d.parentNode.removeChild(d);}catch(x){}
   }
  }
- apply();
- setTimeout(apply,100);setTimeout(apply,500);setTimeout(apply,1200);
- var obs=new MutationObserver(apply);
+ function blockedTarget(node){
+  var n=node;
+  for(var i=0;i<10&&n;i++,n=n.parentElement){
+   if(n.getAttribute&&n.getAttribute('data-cdh-mainmenu-disabled'))return true;
+   var t=norm(n.textContent);
+   if(targetKind(t))return true;
+  }
+  return false;
+ }
+ function guard(ev){
+  if(blockedTarget(ev.target)){
+   try{ev.preventDefault();}catch(x){}
+   try{ev.stopPropagation();}catch(x){}
+   try{ev.stopImmediatePropagation();}catch(x){}
+   return false;
+  }
+ }
+ ['click','dblclick','mousedown','mouseup','pointerdown','pointerup','touchstart','touchend','keydown','keyup','keypress','focusin']
+  .forEach(function(name){document.addEventListener(name,guard,true);});
+
+ removeTargets();
+ setTimeout(removeTargets,50);
+ setTimeout(removeTargets,150);
+ setTimeout(removeTargets,500);
+ setTimeout(removeTargets,1200);
+
+ var queued=false;
+ var obs=new MutationObserver(function(){
+  if(queued)return;
+  queued=true;
+  setTimeout(function(){queued=false;removeTargets();},0);
+ });
  obs.observe(document.documentElement,{childList:true,subtree:true,characterData:true});
 })();
 )JS";
@@ -194,7 +241,7 @@ static const char kSuiteScript[] = R"JS(
   multiLaunchHideInputPrompts:1,multiLaunchHideDelayMs:0,multiLaunchFadeDurationMs:150
  };
  var CDH=window.__ControlDynamicHUDSuite={
-  version:'1.0I',health:false,mission:false,crosshair:false,expedition:false,
+  version:'1.0J',health:false,mission:false,crosshair:false,expedition:false,
   hudVisible:true,active:true,lastError:'',forceVisible:false
  };
  var MODE={COMBAT:0,ADVENTURING:1,STORY:2,ACTION:3,EXAMINE:4,HIDDEN:5};
@@ -468,7 +515,7 @@ static const char kSuiteScript[] = R"JS(
   if(!CFG.diagnostics)return;
   var p=document.getElementById('cdh-diagnostic');if(!p)return;
   p.textContent=
-   'Control Dynamic HUD v1.0I configurable suite\n'
+   'Control Dynamic HUD v1.0J configurable suite\n'
   +'HUD '+yes(hudVisible)+' | active '+yes(active)+' | force '+yes(isForced())+' | aim '+yes(isAiming)+' | key '+CFG.showHudKey+'\n'
   +'health '+yes(CDH.health)+' | mission '+yes(CDH.mission)+' | crosshair '+yes(CDH.crosshair)+' | expedition '+yes(CDH.expedition)+'\n'
   +'ammo '+yes(!!document.querySelector('.awesome-crosshair--ammo'))+' | enemyHP '+yes(!!document.querySelector('.enemy-health-container'))+' | energy '+yes(!!document.querySelector('.ability-resource-bar'))+'\n'
@@ -1114,7 +1161,7 @@ static bool install_hook(WinApi& api,uptr target){
     DWORD dummy=0;api.VirtualProtect((void*)target,stolen,old,&dummy);api.FlushInstructionCache((HANDLE)(uptr)-1,(void*)target,stolen);return true;
 }
 
-extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 108;}
+extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 109;}
 extern "C" __declspec(dllexport) void* CDH_RelocAnchor=(void*)&CDH_Version;
 
 extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
@@ -1126,7 +1173,7 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     load_config(api);g_showHudVk=parse_vk(g_cfg.showHudKey);build_config_script();
     g_WriteFile=api.WriteFile;g_log=api.CreateFileW(L"plugins\\ControlDynamicHUD.log",GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
     if(!g_log||(uptr)g_log==INVALID_HANDLE_VALUE_U)return 1;
-    log_line("Control Dynamic HUD V1.0I NATIVE MULTILAUNCH + MENU TEST");log_line("Mode: native Multi Launch m_fButtonOpacity override + broader optional main-menu cleanup");
+    log_line("Control Dynamic HUD V1.0J SAFE MENU REMOVAL + NATIVE MULTILAUNCH TEST");log_line("Mode: native Multi Launch m_fButtonOpacity override + hard-disabled optional main-menu entries");
     log_cstr("Config: Enabled=");log_dec(g_cfg.enabled?1:0);log_cstr(" ShowHUDKey=");log_cstr(g_cfg.showHudKey);log_cstr(" VK=");log_hex(g_showHudVk);log_cstr(" ShowHUDDurationMs=");log_dec(g_cfg.showHudDurationMs);
     log_cstr(" HideNewGame=");log_dec(g_cfg.mainMenuHideNewGame?1:0);
     log_cstr(" HideMissionSelect=");log_dec(g_cfg.mainMenuHideMissionSelect?1:0);
