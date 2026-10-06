@@ -42,12 +42,18 @@ using FnFlushInstructionCache = BOOL (WINAPI*)(HANDLE,LPCVOID,usize);
 
 typedef void* (WINAPI *FactoryFn)(void*, void*, void*, void*);
 typedef void* (WINAPI *GetNativeViewFn)(void*, u32);
+typedef void (WINAPI *ReadyFn)(void*);
 
 static HANDLE g_log = nullptr;
 static FnWriteFile g_WriteFile = nullptr;
 static FactoryFn g_originalFactory = nullptr;
 static GetNativeViewFn g_getNativeView = nullptr;
+static ReadyFn g_originalReady = nullptr;
+static uptr* g_readyEntry = nullptr;
+static FnVirtualProtect g_VirtualProtect = nullptr;
+static FnFlushInstructionCache g_FlushInstructionCache = nullptr;
 static volatile u32 g_factoryCalls = 0;
+static volatile u32 g_readyCalls = 0;
 
 static inline void* get_peb() { void* peb; __asm__ __volatile__("movq %%gs:0x60, %0" : "=r"(peb)); return peb; }
 static u16 rd16(const void* p){ return *(const volatile u16*)p; }
@@ -124,6 +130,70 @@ static uptr scan_factory(void* exe,u32& count){
 
 static void write_abs_jump(u8* at,void* dst){ at[0]=0xFF;at[1]=0x25;at[2]=0;at[3]=0;at[4]=0;at[5]=0;*(uptr*)(at+6)=(uptr)dst; }
 
+static void restore_ready_hook(){
+    if(!g_readyEntry||!g_originalReady||!g_VirtualProtect)return;
+    DWORD old=0;
+    if(g_VirtualProtect((void*)g_readyEntry,sizeof(uptr),PAGE_EXECUTE_READWRITE,&old)){
+        *g_readyEntry=(uptr)g_originalReady;
+        DWORD dummy=0;
+        g_VirtualProtect((void*)g_readyEntry,sizeof(uptr),old,&dummy);
+        if(g_FlushInstructionCache) g_FlushInstructionCache((HANDLE)(uptr)-1,(void*)g_readyEntry,sizeof(uptr));
+        log_line("Ready vtable hook restored.");
+    }
+    g_readyEntry=nullptr;
+}
+
+static void WINAPI HookReady(void* self){
+    u32 n=++g_readyCalls;
+    if(g_originalReady) g_originalReady(self);
+
+    void* system=self?(void*)rdptr((u8*)self+0x10):nullptr;
+    u32 pageIndex=self?rd32((u8*)self+0x18):0xFFFFFFFFu;
+    void* view=(system&&pageIndex!=0xFFFFFFFFu&&g_getNativeView)?g_getNativeView(system,pageIndex):nullptr;
+
+    if(n<=4 || view){
+        log_cstr("HUD ready callback #");log_dec(n);
+        log_cstr(" System*=");log_hex((uptr)system);
+        log_cstr(" pageIndex=");log_dec(pageIndex);
+        log_cstr(" View*=");log_hex((uptr)view);
+        log_bytes("\r\n",2);
+    }
+
+    if(view){
+        log_line("HUD native View acquired.");
+        restore_ready_hook();
+    } else if(n>=64){
+        log_line("Ready probe cap reached without a valid View; restoring original vtable.");
+        restore_ready_hook();
+    }
+}
+
+static bool install_ready_hook(void* hud){
+    if(!hud||!g_VirtualProtect)return false;
+    uptr vtbl=rdptr(hud);
+    if(!vtbl)return false;
+    uptr* entry=(uptr*)(vtbl + 27u*sizeof(uptr));
+    uptr original=*entry;
+    if(!original)return false;
+
+    g_originalReady=(ReadyFn)original;
+    g_readyEntry=entry;
+
+    log_cstr("HUD ready vtable entry[27]: ");log_hex((uptr)entry);
+    log_cstr(" original=");log_hex(original);log_bytes("\r\n",2);
+
+    DWORD old=0;
+    if(!g_VirtualProtect((void*)entry,sizeof(uptr),PAGE_EXECUTE_READWRITE,&old)){
+        g_readyEntry=nullptr; g_originalReady=nullptr; return false;
+    }
+    *entry=(uptr)&HookReady;
+    DWORD dummy=0;
+    g_VirtualProtect((void*)entry,sizeof(uptr),old,&dummy);
+    if(g_FlushInstructionCache) g_FlushInstructionCache((HANDLE)(uptr)-1,(void*)entry,sizeof(uptr));
+    log_line("One-shot ready vtable hook installed.");
+    return true;
+}
+
 static void* WINAPI HookFactory(void* a,void* b,void* c,void* d){
     u32 n=++g_factoryCalls;
     log_cstr("HUD factory call #");log_dec(n);log_cstr(" arg3=");log_hex((uptr)c);log_bytes("\r\n",2);
@@ -134,10 +204,8 @@ static void* WINAPI HookFactory(void* a,void* b,void* c,void* d){
         void* system=(void*)rdptr((u8*)r+0x10);
         u32 pageIndex=rd32((u8*)r+0x18);
         log_cstr("HUD vtable: ");log_hex(vtbl);log_bytes("\r\n",2);
-        log_cstr("HUD System*: ");log_hex((uptr)system);log_cstr(" pageIndex=");log_dec(pageIndex);log_bytes("\r\n",2);
-        void* view=nullptr;
-        if(system&&g_getNativeView) view=g_getNativeView(system,pageIndex);
-        log_cstr("Coherent native View*: ");log_hex((uptr)view);log_bytes("\r\n",2);
+        log_cstr("Initial HUD System*: ");log_hex((uptr)system);log_cstr(" pageIndex=");log_dec(pageIndex);log_bytes("\r\n",2);
+        if(!g_readyEntry && !install_ready_hook(r)) log_line("FAIL-OPEN: could not install one-shot ready hook.");
     }
     return r;
 }
@@ -153,14 +221,16 @@ static bool install_hook(WinApi& api,uptr target){
     DWORD dummy=0;api.VirtualProtect((void*)target,stolen,old,&dummy);api.FlushInstructionCache((HANDLE)(uptr)-1,(void*)target,stolen);return true;
 }
 
-extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 3;}
+extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 4;}
 extern "C" __declspec(dllexport) void* CDH_RelocAnchor=(void*)&CDH_Version;
 
 extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     if(reason!=DLL_PROCESS_ATTACH)return 1; WinApi api{};if(!init_api(api))return 1;
+    g_VirtualProtect=api.VirtualProtect;
+    g_FlushInstructionCache=api.FlushInstructionCache;
     g_WriteFile=api.WriteFile;g_log=api.CreateFileW(L"plugins\\ControlDynamicHUD.log",GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
     if(!g_log||(uptr)g_log==INVALID_HANDLE_VALUE_U)return 1;
-    log_line("Control Dynamic HUD V0.3 NATIVE VIEW PROBE");log_line("Mode: HUD factory + ui::System::getNativeView probe only (no visual changes)");
+    log_line("Control Dynamic HUD V0.4 ONE-SHOT READY PROBE");log_line("Mode: temporary HUD ready-vtable probe only (no visual changes)");
     log_cstr("Executable: ");log_wide(first_module_name());log_bytes("\r\n",2);void* exe=first_module_base();log_cstr("Executable base: ");log_hex((uptr)exe);log_bytes("\r\n",2);
     void* coh=find_module("coherentuigt.dll");log_cstr("CoherentUIGT.dll: ");if(coh){log_hex((uptr)coh);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
     void* ui=find_module("ui_rmdwin10_f.dll");log_cstr("ui_rmdwin10_f.dll: ");if(ui){log_hex((uptr)ui);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
