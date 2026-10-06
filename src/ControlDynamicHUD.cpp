@@ -188,7 +188,7 @@ static const char kSuiteScript[] = R"JS(
   multiLaunchHideInputPrompts:1,multiLaunchHideDelayMs:0,multiLaunchFadeDurationMs:150
  };
  var CDH=window.__ControlDynamicHUDSuite={
-  version:'1.0B',health:false,mission:false,crosshair:false,expedition:false,
+  version:'1.0H',health:false,mission:false,crosshair:false,expedition:false,
   hudVisible:true,active:true,lastError:'',forceVisible:false
  };
  var MODE={COMBAT:0,ADVENTURING:1,STORY:2,ACTION:3,EXAMINE:4,HIDDEN:5};
@@ -875,7 +875,7 @@ static const u8 kMenuFactoryPat[] = {
 0x48,0x89,0x4C,0x24,0x08,0x48,0x83,0xEC,0x38,0x48,0xC7,0x44,0x24,0x20,0xFE,0xFF,0xFF,0xFF,
 0xBA,0x08,0x00,0x00,0x00,0xB9,0xB8,0x07,0x00,0x00,0xFF,0x15,0,0,0,0,
 0x48,0x89,0x44,0x24,0x40,0x48,0x8B,0xC8,0xE8,0,0,0,0,0x90,0x48,0x83,0xC4,0x38,0xC3};
-static const char kMenuFactoryMask[] = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx????xxxxxxxxx????xxxxxxx";
+static const char kMenuFactoryMask[] = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx????xxxxxxxxx????xxxxxx";
 
 static uptr scan_menu_factory(void* exe,u32& count){
     count=0;u8* t=nullptr;u32 sz=0;if(!get_text(exe,t,sz))return 0;
