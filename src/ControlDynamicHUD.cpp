@@ -42,6 +42,7 @@ using FnFlushInstructionCache = BOOL (WINAPI*)(HANDLE,LPCVOID,usize);
 using FnGetPrivateProfileIntA = u32 (WINAPI*)(const char*,const char*,s32,const char*);
 using FnGetPrivateProfileStringA = DWORD (WINAPI*)(const char*,const char*,const char*,char*,DWORD,const char*);
 using FnGetAsyncKeyState = short (WINAPI*)(int);
+using FnGetTickCount64 = u64 (WINAPI*)();
 
 typedef void* (WINAPI *FactoryFn)(void*, void*, void*, void*);
 typedef void* (WINAPI *PageGetViewFn)(void*);
@@ -62,7 +63,12 @@ static uptr* g_updateEntry = nullptr;
 static FnVirtualProtect g_VirtualProtect = nullptr;
 static FnFlushInstructionCache g_FlushInstructionCache = nullptr;
 static FnGetAsyncKeyState g_GetAsyncKeyState = nullptr;
+static FnGetTickCount64 g_GetTickCount64 = nullptr;
 static u32 g_showHudVk = 0;
+static u64 g_forceHudUntilMs = 0;
+static u64 g_multiLaunchActiveSinceMs = 0;
+static bool g_multiLaunchWasActive = false;
+static bool g_multiLaunchLoggedActive = false;
 static bool g_showHudKeyDown = false;
 static volatile u32 g_factoryCalls = 0;
 static volatile u32 g_readyCalls = 0;
@@ -124,7 +130,7 @@ static const char kMainMenuScript[] = R"JS(
  if(window.__ControlDynamicHUDMainMenu)return;
  var CFG=window.__CDH_MAINMENU_CONFIG||{hideNewGame:0,hideMissionSelect:0};
  if(!CFG.hideNewGame&&!CFG.hideMissionSelect)return;
- window.__ControlDynamicHUDMainMenu={version:'1.0H'};
+ window.__ControlDynamicHUDMainMenu={version:'1.0I'};
 
  var style=document.createElement('style');
  style.id='cdh-mainmenu-style';
@@ -138,37 +144,35 @@ static const char kMainMenuScript[] = R"JS(
    .replace(/[ùûü]/g,'u').replace(/ç/g,'c')
    .replace(/\s+/g,' ').trim();
  }
- function matches(e,kind){
-  var raw=String(e.outerHTML||'');
-  var t=norm(e.textContent);
-  if(kind==='new'){
-   if(raw.indexOf('OnNewGameClicked')!==-1)return true;
-   return t==='new game'||t==='nouvelle partie';
-  }
-  if(raw.indexOf('OnMissionSelected')!==-1)return true;
-  return t==='mission select'||t==='select mission'||t==='selection de mission';
+ function targetKind(t){
+  if(CFG.hideNewGame&&(t==='new game'||t==='nouvelle partie'))return 'new';
+  if(CFG.hideMissionSelect&&(t==='mission select'||t==='select mission'||t==='mission selection'||t==='selection de mission'))return 'mission';
+  return '';
  }
- function leafClickable(e){
-  if(!e||!e.isConnected)return null;
-  var n=e;
-  for(var i=0;i<5&&n;i++,n=n.parentElement){
-   var tag=String(n.tagName||'').toLowerCase();
-   var role=String(n.getAttribute&&n.getAttribute('role')||'').toLowerCase();
-   if(tag==='button'||tag==='a'||role==='button'||(n.hasAttribute&&n.hasAttribute('tabindex')))return n;
+ function topSameText(e,t){
+  var n=e,p=e&&e.parentElement;
+  for(var i=0;i<6&&p;i++,p=p.parentElement){
+   if(norm(p.textContent)!==t)break;
+   n=p;
   }
-  return e;
+  return n;
  }
  function apply(){
-  var nodes=document.querySelectorAll('button,a,[role="button"],[tabindex]');
-  for(var i=0;i<nodes.length;i++){
-   var e=nodes[i];
-   if(CFG.hideNewGame&&matches(e,'new'))leafClickable(e).setAttribute('data-cdh-mainmenu-hidden','1');
-   if(CFG.hideMissionSelect&&matches(e,'mission'))leafClickable(e).setAttribute('data-cdh-mainmenu-hidden','1');
+  if(!document.body)return;
+  var all=document.body.querySelectorAll('*');
+  for(var i=0;i<all.length;i++){
+   var e=all[i];
+   if(e.children&&e.children.length>8)continue;
+   var t=norm(e.textContent);
+   if(!targetKind(t))continue;
+   var row=topSameText(e,t);
+   if(row)row.setAttribute('data-cdh-mainmenu-hidden','1');
   }
  }
  apply();
+ setTimeout(apply,100);setTimeout(apply,500);setTimeout(apply,1200);
  var obs=new MutationObserver(apply);
- obs.observe(document.documentElement,{childList:true,subtree:true});
+ obs.observe(document.documentElement,{childList:true,subtree:true,characterData:true});
 })();
 )JS";
 
@@ -188,7 +192,7 @@ static const char kSuiteScript[] = R"JS(
   multiLaunchHideInputPrompts:1,multiLaunchHideDelayMs:0,multiLaunchFadeDurationMs:150
  };
  var CDH=window.__ControlDynamicHUDSuite={
-  version:'1.0H',health:false,mission:false,crosshair:false,expedition:false,
+  version:'1.0I',health:false,mission:false,crosshair:false,expedition:false,
   hudVisible:true,active:true,lastError:'',forceVisible:false
  };
  var MODE={COMBAT:0,ADVENTURING:1,STORY:2,ACTION:3,EXAMINE:4,HIDDEN:5};
@@ -197,7 +201,6 @@ static const char kSuiteScript[] = R"JS(
  var mission={map:null,log:null,obs:null,timer:0,shown:true};
  var cross={el:null,timer:0,shown:true,hideLatched:false};
  var expedition={el:null,timer:0,shown:true};
- var multiLaunch={timer:0,poll:0,saved:[],modified:0};
  var resumeTimer=0,heartbeat=0,diagTimer=0,rebindTimer=0,forceTimer=0,forceUntil=0;
 
  function isForced(){return forceUntil>Date.now();}
@@ -216,7 +219,6 @@ static const char kSuiteScript[] = R"JS(
   +'.awesome-crosshair[data-cdh-crosshair-hidden="1"]{opacity:0!important;}'
   +'.expedition-hud>.expedition-mod-group{transition:opacity '+CFG.expeditionFadeDurationMs+'ms var(--easing);}'
   +'.expedition-hud>.expedition-mod-group[data-cdh-expedition-hidden="1"]{opacity:0!important;}'
-  +'[data-cdh-multilaunch-input-hidden="1"]{opacity:0!important;visibility:hidden!important;transition:opacity '+CFG.multiLaunchFadeDurationMs+'ms var(--easing);}'
   +'#cdh-diagnostic{position:absolute;left:18px;top:18px;z-index:2147483647;'
   +'font:15px monospace;color:white;background:rgba(0,0,0,.72);padding:10px 12px;'
   +'pointer-events:none;white-space:pre;line-height:1.25;max-width:760px;}';
@@ -393,99 +395,12 @@ static const char kSuiteScript[] = R"JS(
   return true;
  }
 
- function multiLaunchModels(){
-  var a=[];
-  if(window.g_multiLaunchIndicator1)a.push(g_multiLaunchIndicator1);
-  if(window.g_multiLaunchIndicator2)a.push(g_multiLaunchIndicator2);
-  if(window.g_multiLaunchIndicator3)a.push(g_multiLaunchIndicator3);
-  return a;
- }
- function multiLaunchActive(){
-  var a=multiLaunchModels();
-  for(var i=0;i<a.length;i++){
-   if(a[i]&&a[i].m_bHighlightVisible!==false)return true;
-  }
-  return false;
- }
- function interactionDataArrays(){
-  var out=[];
-  if(!window.g_interactionMarkers)return out;
-  var g=g_interactionMarkers;
-  try{
-   if(g.m_vecInteractionMarkersData)out.push(g.m_vecInteractionMarkersData);
-   if(g.m_interactionMarkersUIData&&g.m_interactionMarkersUIData.m_vecInteractionMarkersData)
-    out.push(g.m_interactionMarkersUIData.m_vecInteractionMarkersData);
-  }catch(e){}
-  return out;
- }
- function restoreMultiLaunchButtonOpacity(){
-  clearTimer(multiLaunch);
-  if(multiLaunch.poll){clearInterval(multiLaunch.poll);multiLaunch.poll=0;}
-  for(var i=0;i<multiLaunch.saved.length;i++){
-   var x=multiLaunch.saved[i];
-   try{if(x&&x.obj)x.obj.m_fButtonOpacity=x.value;}catch(e){}
-  }
-  multiLaunch.saved=[];
-  multiLaunch.modified=0;
- }
- function forceMultiLaunchButtonOpacityZero(){
-  if(!active||!CFG.multiLaunchHideInputPrompts||isForced()||!multiLaunchActive())return;
-  var arrays=interactionDataArrays();
-  var seen=[];
-  for(var a=0;a<arrays.length;a++){
-   var arr=arrays[a];
-   var n=Number(arr.length||0);
-   for(var i=0;i<n;i++){
-    var item=arr[i];
-    if(!item||typeof item.m_fButtonOpacity==='undefined')continue;
-    if(seen.indexOf(item)!==-1)continue;
-    seen.push(item);
-    var already=false;
-    for(var j=0;j<multiLaunch.saved.length;j++){
-     if(multiLaunch.saved[j].obj===item){already=true;break;}
-    }
-    if(!already){
-     var old=Number(item.m_fButtonOpacity);
-     multiLaunch.saved.push({obj:item,value:isFinite(old)?old:1});
-    }
-    try{item.m_fButtonOpacity=0;}catch(e){}
-   }
-  }
-  multiLaunch.modified=multiLaunch.saved.length;
- }
- function beginMultiLaunchOpacityOverride(){
-  if(CFG.multiLaunchHideDelayMs===0){
-   forceMultiLaunchButtonOpacityZero();
-  }else if(!multiLaunch.timer){
-   multiLaunch.timer=setTimeout(function(){
-    multiLaunch.timer=0;
-    if(active&&!isForced()&&multiLaunchActive())forceMultiLaunchButtonOpacityZero();
-   },CFG.multiLaunchHideDelayMs);
-  }
-  if(!multiLaunch.poll){
-   multiLaunch.poll=setInterval(function(){
-    if(!active||isForced()||!multiLaunchActive()){
-     restoreMultiLaunchButtonOpacity();
-     return;
-    }
-    forceMultiLaunchButtonOpacityZero();
-   },100);
-  }
- }
- function updateMultiLaunchPrompts(){
-  if(!CFG.multiLaunchHideInputPrompts||!multiLaunchActive()||isForced()){
-   restoreMultiLaunchButtonOpacity();
-   return;
-  }
-  beginMultiLaunchOpacityOverride();
- }
-
 
  function rebind(){
   rebindTimer=0;
   if(!active)return;
   addStyle();
-  bindHealth();bindMission();bindCrosshair();bindExpedition();updateMultiLaunchPrompts();updateDiag();
+  bindHealth();bindMission();bindCrosshair();bindExpedition();updateDiag();
  }
  function scheduleRebind(ms){
   if(!active||rebindTimer)return;
@@ -502,11 +417,10 @@ static const char kSuiteScript[] = R"JS(
  function suspendHud(){
   if(resumeTimer){clearTimeout(resumeTimer);resumeTimer=0;}
   if(rebindTimer){clearTimeout(rebindTimer);rebindTimer=0;}
-  clearTimer(hp);clearTimer(mission);clearTimer(cross);clearTimer(expedition);clearTimer(multiLaunch);
+  clearTimer(hp);clearTimer(mission);clearTimer(cross);clearTimer(expedition);
   disconnectObserver(hp);disconnectObserver(mission);
   hp.bar=null;hp.fill=null;mission.map=null;mission.log=null;cross.el=null;expedition.el=null;
   CDH.health=false;CDH.mission=false;CDH.crosshair=false;CDH.expedition=false;
-  restoreMultiLaunchButtonOpacity();
   updateDiag();
  }
  function resumeHud(){
@@ -526,14 +440,12 @@ static const char kSuiteScript[] = R"JS(
    (CFG.crosshairEnabled&&(!cross.el||!cross.el.isConnected))||
    (CFG.expeditionEnabled&&(!expedition.el||!expedition.el.isConnected));
   if(needs)scheduleRebind(0);
-  if(CFG.multiLaunchHideInputPrompts&&multiLaunchActive()&&!isForced())forceMultiLaunchButtonOpacityZero();
  }
 
  function forceShowHUD(){
   if(!active)return;
   forceUntil=Date.now()+CFG.showHudDurationMs;CDH.forceVisible=true;
-  clearTimer(hp);clearTimer(mission);clearTimer(cross);clearTimer(expedition);clearTimer(multiLaunch);
-  restoreMultiLaunchButtonOpacity();
+  clearTimer(hp);clearTimer(mission);clearTimer(cross);clearTimer(expedition);
   if(hp.bar)setHpHidden(false);
   if(mission.log)missionShow();
   if(cross.el)setCrossHidden(false);
@@ -543,7 +455,7 @@ static const char kSuiteScript[] = R"JS(
    forceTimer=0;forceUntil=0;CDH.forceVisible=false;
    if(!active)return;
    cross.hideLatched=false;
-   updateHealth();onMapChanged();updateCrosshair();scheduleExpeditionHide();updateMultiLaunchPrompts();
+   updateHealth();onMapChanged();updateCrosshair();scheduleExpeditionHide();
   },CFG.showHudDurationMs);
   updateDiag();
  }
@@ -554,9 +466,9 @@ static const char kSuiteScript[] = R"JS(
   if(!CFG.diagnostics)return;
   var p=document.getElementById('cdh-diagnostic');if(!p)return;
   p.textContent=
-   'Control Dynamic HUD v1.0H configurable suite\n'
+   'Control Dynamic HUD v1.0I configurable suite\n'
   +'HUD '+yes(hudVisible)+' | active '+yes(active)+' | force '+yes(isForced())+' | aim '+yes(isAiming)+' | key '+CFG.showHudKey+'\n'
-  +'health '+yes(CDH.health)+' | mission '+yes(CDH.mission)+' | crosshair '+yes(CDH.crosshair)+' | expedition '+yes(CDH.expedition)+' | multiLaunch '+yes(multiLaunchActive())+' opacityItems '+multiLaunch.modified+'\n'
+  +'health '+yes(CDH.health)+' | mission '+yes(CDH.mission)+' | crosshair '+yes(CDH.crosshair)+' | expedition '+yes(CDH.expedition)+'\n'
   +'ammo '+yes(!!document.querySelector('.awesome-crosshair--ammo'))+' | enemyHP '+yes(!!document.querySelector('.enemy-health-container'))+' | energy '+yes(!!document.querySelector('.ability-resource-bar'))+'\n'
   +'pickup '+yes(!!document.querySelector('.pickup-notifications-container'))+' | interaction '+yes(!!document.querySelector('.interaction-marker-container'))+' | threat '+yes(!!document.querySelector('.threat-indicators'))+
    (CDH.lastError?'\nERR '+CDH.lastError:'');
@@ -606,17 +518,6 @@ static const char kSuiteScript[] = R"JS(
     updateDiag();
    });
   }
-  var ml=multiLaunchModels();
-  for(var mi=0;mi<ml.length;mi++){
-   (function(model){
-    engine.addModelChangeListener(model,'m_bHighlightVisible',function(){
-     updateMultiLaunchPrompts();updateDiag();
-    });
-    engine.addModelChangeListener(model,'m_strHighlightObjectTransform',function(){
-     updateMultiLaunchPrompts();updateDiag();
-    });
-   })(ml[mi]);
-  }
   startDiag();
   heartbeat=setInterval(heartbeatTick,1000);
   if(active)rebindBurst();
@@ -626,6 +527,7 @@ static const char kSuiteScript[] = R"JS(
 )JS";
 
 static inline void* get_peb() { void* peb; __asm__ __volatile__("movq %%gs:0x60, %0" : "=r"(peb)); return peb; }
+static u8 rd8(const void* p){ return *(const volatile u8*)p; }
 static u16 rd16(const void* p){ return *(const volatile u16*)p; }
 static u32 rd32(const void* p){ return *(const volatile u32*)p; }
 static uptr rdptr(const void* p){ return *(const volatile uptr*)p; }
@@ -666,13 +568,14 @@ static void* resolve_export(void* module,const char* name,int depth){
     for(u32 i=0;i<nn;++i){const char* n=(const char*)(base+names[i]); if(!streq_ascii(n,name))continue; u32 r=funcs[ords[i]]; if(r>=er&&r<er+es)return resolve_forwarder((const char*)(base+r),depth); return base+r;} return nullptr;
 }
 
-struct WinApi { FnCreateFileW CreateFileW; FnWriteFile WriteFile; FnCloseHandle CloseHandle; FnVirtualAlloc VirtualAlloc; FnVirtualProtect VirtualProtect; FnFlushInstructionCache FlushInstructionCache; FnGetPrivateProfileIntA GetPrivateProfileIntA; FnGetPrivateProfileStringA GetPrivateProfileStringA; FnGetAsyncKeyState GetAsyncKeyState; };
+struct WinApi { FnCreateFileW CreateFileW; FnWriteFile WriteFile; FnCloseHandle CloseHandle; FnVirtualAlloc VirtualAlloc; FnVirtualProtect VirtualProtect; FnFlushInstructionCache FlushInstructionCache; FnGetPrivateProfileIntA GetPrivateProfileIntA; FnGetPrivateProfileStringA GetPrivateProfileStringA; FnGetAsyncKeyState GetAsyncKeyState; FnGetTickCount64 GetTickCount64; };
 static bool init_api(WinApi& a){
     void* k=find_module("kernel32.dll"); if(!k)return false;
     a.CreateFileW=(FnCreateFileW)resolve_export(k,"CreateFileW"); a.WriteFile=(FnWriteFile)resolve_export(k,"WriteFile"); a.CloseHandle=(FnCloseHandle)resolve_export(k,"CloseHandle");
     a.VirtualAlloc=(FnVirtualAlloc)resolve_export(k,"VirtualAlloc"); a.VirtualProtect=(FnVirtualProtect)resolve_export(k,"VirtualProtect"); a.FlushInstructionCache=(FnFlushInstructionCache)resolve_export(k,"FlushInstructionCache");
     a.GetPrivateProfileIntA=(FnGetPrivateProfileIntA)resolve_export(k,"GetPrivateProfileIntA");
     a.GetPrivateProfileStringA=(FnGetPrivateProfileStringA)resolve_export(k,"GetPrivateProfileStringA");
+    a.GetTickCount64=(FnGetTickCount64)resolve_export(k,"GetTickCount64");
     void* u=find_module("user32.dll");
     a.GetAsyncKeyState=u?(FnGetAsyncKeyState)resolve_export(u,"GetAsyncKeyState"):nullptr;
     return a.CreateFileW&&a.WriteFile&&a.CloseHandle&&a.VirtualAlloc&&a.VirtualProtect&&a.FlushInstructionCache&&a.GetPrivateProfileIntA&&a.GetPrivateProfileStringA;
@@ -930,27 +833,96 @@ static void restore_update_hook(){
     g_updateEntry=nullptr;
 }
 
-static void WINAPI HookUpdate(void* self){
-    if(g_originalUpdate) g_originalUpdate(self);
-    if(!g_GetAsyncKeyState||!g_showHudVk||!g_pageGetView)return;
+static bool native_multilaunch_active(void* hud){
+    if(!hud)return false;
+    uptr launch=rdptr((u8*)hud+0x168);
+    if(!launch)return false;
+    const uptr models[3]={launch+0x88,launch+0x120,launch+0x1B8};
+    for(int i=0;i<3;++i){
+        if(rd8((void*)(models[i]+0x60))!=0)return true;
+    }
+    return false;
+}
 
-    bool down=(g_GetAsyncKeyState((int)g_showHudVk)&0x8000)!=0;
-    if(!down){g_showHudKeyDown=false;return;}
-    if(g_showHudKeyDown)return;
-    g_showHudKeyDown=true;
+static void native_apply_multilaunch_button_opacity(void* hud,u64 now){
+    if(!g_cfg.multiLaunchHideInputPrompts||!hud)return;
 
-    void* view=self?g_pageGetView(self):nullptr;
-    uptr viewVtable=view?rdptr(view):0;
-    uptr execute=viewVtable?rdptr((u8*)viewVtable+61u*sizeof(uptr)):0;
-    uptr expectedVtable=(uptr)g_coherentBase+kPublicViewVtableRva;
-    uptr expected=(uptr)g_coherentBase+kExecuteScriptRva;
-    if(!view||viewVtable!=expectedVtable||execute!=expected){
-        log_line("Show HUD hotkey pressed but current HUD View is not ready; ignored.");
+    bool active=native_multilaunch_active(hud);
+    if(!active){
+        g_multiLaunchWasActive=false;
+        g_multiLaunchActiveSinceMs=0;
+        g_multiLaunchLoggedActive=false;
         return;
     }
 
-    log_cstr("Show HUD hotkey pressed: ");log_cstr(g_cfg.showHudKey);log_bytes("\r\n",2);
-    ((ExecuteScriptFn)execute)(view,kForceHudScript,nullptr);
+    if(!g_multiLaunchWasActive){
+        g_multiLaunchWasActive=true;
+        g_multiLaunchActiveSinceMs=now;
+    }
+
+    if(g_forceHudUntilMs&&now<g_forceHudUntilMs)return;
+
+    u64 elapsed=now>=g_multiLaunchActiveSinceMs?now-g_multiLaunchActiveSinceMs:0;
+    if(elapsed<g_cfg.multiLaunchHideDelayMs)return;
+
+    float factor=0.0f;
+    u64 fadeElapsed=elapsed-g_cfg.multiLaunchHideDelayMs;
+    if(g_cfg.multiLaunchFadeDurationMs&&fadeElapsed<g_cfg.multiLaunchFadeDurationMs){
+        factor=1.0f-(float)fadeElapsed/(float)g_cfg.multiLaunchFadeDurationMs;
+        if(factor<0.0f)factor=0.0f;
+        if(factor>1.0f)factor=1.0f;
+    }
+
+    uptr model=rdptr((u8*)hud+0x160);
+    if(!model)return;
+    uptr begin=rdptr((void*)(model+0x10));
+    u32 count=rd32((void*)(model+0x18));
+    if(!begin||count>256)return;
+
+    for(u32 i=0;i<count;++i){
+        float* opacity=(float*)(begin+(uptr)i*0x18+0x10);
+        float v=*opacity;
+        if(factor<=0.0f)*opacity=0.0f;
+        else if(v>0.0f&&v<=1.5f)*opacity=v*factor;
+    }
+
+    if(!g_multiLaunchLoggedActive){
+        log_cstr("Native Multi Launch active; interaction entries=");log_dec(count);
+        log_cstr(" delayMs=");log_dec(g_cfg.multiLaunchHideDelayMs);
+        log_cstr(" fadeMs=");log_dec(g_cfg.multiLaunchFadeDurationMs);
+        log_bytes("\r\n",2);
+        g_multiLaunchLoggedActive=true;
+    }
+}
+
+static void WINAPI HookUpdate(void* self){
+    if(g_originalUpdate)g_originalUpdate(self);
+
+    u64 now=g_GetTickCount64?g_GetTickCount64():0;
+
+    if(g_GetAsyncKeyState&&g_showHudVk){
+        bool down=(g_GetAsyncKeyState((int)g_showHudVk)&0x8000)!=0;
+        if(!down){
+            g_showHudKeyDown=false;
+        }else if(!g_showHudKeyDown){
+            g_showHudKeyDown=true;
+            if(g_GetTickCount64)g_forceHudUntilMs=now+(u64)g_cfg.showHudDurationMs;
+
+            void* view=(self&&g_pageGetView)?g_pageGetView(self):nullptr;
+            uptr viewVtable=view?rdptr(view):0;
+            uptr execute=viewVtable?rdptr((u8*)viewVtable+61u*sizeof(uptr)):0;
+            uptr expectedVtable=(uptr)g_coherentBase+kPublicViewVtableRva;
+            uptr expected=(uptr)g_coherentBase+kExecuteScriptRva;
+            if(view&&viewVtable==expectedVtable&&execute==expected){
+                log_cstr("Show HUD hotkey pressed: ");log_cstr(g_cfg.showHudKey);log_bytes("\r\n",2);
+                ((ExecuteScriptFn)execute)(view,kForceHudScript,nullptr);
+            }else{
+                log_line("Show HUD hotkey pressed but current HUD View is not ready; ignored.");
+            }
+        }
+    }
+
+    native_apply_multilaunch_button_opacity(self,now);
 }
 
 static void restore_menu_ready_hook(){
@@ -964,8 +936,9 @@ static void restore_menu_ready_hook(){
     g_menuReadyEntry=nullptr;
 }
 static void WINAPI HookMenuReady(void* self){
-    ++g_menuReadyCalls;
+    u32 n=++g_menuReadyCalls;
     if(g_originalMenuReady)g_originalMenuReady(self);
+    log_cstr("Main menu onReadyForBindings #");log_dec(n);log_bytes("\r\n",2);
     void* view=(self&&g_pageGetView)?g_pageGetView(self):nullptr;
     uptr vt=view?rdptr(view):0;
     uptr exec=vt?rdptr((u8*)vt+61u*sizeof(uptr)):0;
@@ -974,6 +947,7 @@ static void WINAPI HookMenuReady(void* self){
     if(!view||vt!=expectedVt||exec!=expected)return;
     ((ExecuteScriptFn)exec)(view,g_menuConfigScript,nullptr);
     ((ExecuteScriptFn)exec)(view,kMainMenuScript,nullptr);
+    log_line("Main menu cleanup script injected.");
 }
 static bool install_menu_ready_hook(void* menu){
     if(!menu||!g_VirtualProtect)return false;
@@ -1138,7 +1112,7 @@ static bool install_hook(WinApi& api,uptr target){
     DWORD dummy=0;api.VirtualProtect((void*)target,stolen,old,&dummy);api.FlushInstructionCache((HANDLE)(uptr)-1,(void*)target,stolen);return true;
 }
 
-extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 107;}
+extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 108;}
 extern "C" __declspec(dllexport) void* CDH_RelocAnchor=(void*)&CDH_Version;
 
 extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
@@ -1146,11 +1120,15 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     g_VirtualProtect=api.VirtualProtect;
     g_FlushInstructionCache=api.FlushInstructionCache;
     g_GetAsyncKeyState=api.GetAsyncKeyState;
+    g_GetTickCount64=api.GetTickCount64;
     load_config(api);g_showHudVk=parse_vk(g_cfg.showHudKey);build_config_script();
     g_WriteFile=api.WriteFile;g_log=api.CreateFileW(L"plugins\\ControlDynamicHUD.log",GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
     if(!g_log||(uptr)g_log==INVALID_HANDLE_VALUE_U)return 1;
-    log_line("Control Dynamic HUD V1.0H MENU + MULTILAUNCH MODEL TEST");log_line("Mode: validated HUD + optional main-menu cleanup + direct m_fButtonOpacity override during Multi Launch");
-    log_cstr("Config: Enabled=");log_dec(g_cfg.enabled?1:0);log_cstr(" ShowHUDKey=");log_cstr(g_cfg.showHudKey);log_cstr(" VK=");log_hex(g_showHudVk);log_cstr(" ShowHUDDurationMs=");log_dec(g_cfg.showHudDurationMs);log_bytes("\r\n",2);
+    log_line("Control Dynamic HUD V1.0I NATIVE MULTILAUNCH + MENU TEST");log_line("Mode: native Multi Launch m_fButtonOpacity override + broader optional main-menu cleanup");
+    log_cstr("Config: Enabled=");log_dec(g_cfg.enabled?1:0);log_cstr(" ShowHUDKey=");log_cstr(g_cfg.showHudKey);log_cstr(" VK=");log_hex(g_showHudVk);log_cstr(" ShowHUDDurationMs=");log_dec(g_cfg.showHudDurationMs);
+    log_cstr(" HideNewGame=");log_dec(g_cfg.mainMenuHideNewGame?1:0);
+    log_cstr(" HideMissionSelect=");log_dec(g_cfg.mainMenuHideMissionSelect?1:0);
+    log_bytes("\r\n",2);
     if(!g_cfg.enabled){log_line("Mod disabled by INI; no hook installed.");return 1;}
     log_cstr("Executable: ");log_wide(first_module_name());log_bytes("\r\n",2);void* exe=first_module_base();log_cstr("Executable base: ");log_hex((uptr)exe);log_bytes("\r\n",2);
     patch_ground_slam_target_circle(exe);
