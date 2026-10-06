@@ -127,6 +127,16 @@ static void* WINAPI HookFactory(void* a,void* b,void* c,void* d){
     log_cstr("HUD factory call #");log_dec(n);log_cstr(" arg3=");log_hex((uptr)c);log_bytes("\r\n",2);
     void* r=g_originalFactory?g_originalFactory(a,b,c,d):nullptr;
     log_cstr("HUD object returned: ");log_hex((uptr)r);log_bytes("\r\n",2);
+    if(r){
+        uptr vtbl=rdptr((u8*)r+0x00);
+        void* system=(void*)rdptr((u8*)r+0x10);
+        u32 pageIndex=rd32((u8*)r+0x18);
+        log_cstr("HUD vtable: ");log_hex(vtbl);log_bytes("\r\n",2);
+        log_cstr("HUD System*: ");log_hex((uptr)system);log_cstr(" pageIndex=");log_dec(pageIndex);log_bytes("\r\n",2);
+        void* view=nullptr;
+        if(system&&g_getNativeView) view=g_getNativeView(system,pageIndex);
+        log_cstr("Coherent native View*: ");log_hex((uptr)view);log_bytes("\r\n",2);
+    }
     return r;
 }
 
@@ -141,14 +151,14 @@ static bool install_hook(WinApi& api,uptr target){
     DWORD dummy=0;api.VirtualProtect((void*)target,stolen,old,&dummy);api.FlushInstructionCache((HANDLE)(uptr)-1,(void*)target,stolen);return true;
 }
 
-extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 2;}
+extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 3;}
 extern "C" __declspec(dllexport) void* CDH_RelocAnchor=(void*)&CDH_Version;
 
 extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     if(reason!=DLL_PROCESS_ATTACH)return 1; WinApi api{};if(!init_api(api))return 1;
     g_WriteFile=api.WriteFile;g_log=api.CreateFileW(L"plugins\\ControlDynamicHUD.log",GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
     if(!g_log||(uptr)g_log==INVALID_HANDLE_VALUE_U)return 1;
-    log_line("Control Dynamic HUD V0.2 HUD LIFECYCLE PROBE");log_line("Mode: diagnostic factory hook only (no HUD visual changes)");
+    log_line("Control Dynamic HUD V0.3 NATIVE VIEW PROBE");log_line("Mode: HUD factory + ui::System::getNativeView probe only (no visual changes)");
     log_cstr("Executable: ");log_wide(first_module_name());log_bytes("\r\n",2);void* exe=first_module_base();log_cstr("Executable base: ");log_hex((uptr)exe);log_bytes("\r\n",2);
     void* coh=find_module("coherentuigt.dll");log_cstr("CoherentUIGT.dll: ");if(coh){log_hex((uptr)coh);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
     u32 count=0;uptr factory=scan_factory(exe,count);log_cstr("HUD factory signature matches: ");log_dec(count);log_cstr(" first=");log_hex(factory);log_bytes("\r\n",2);
