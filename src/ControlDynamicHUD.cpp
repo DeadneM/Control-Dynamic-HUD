@@ -48,6 +48,7 @@ typedef void* (WINAPI *PageGetViewFn)(void*);
 typedef void (WINAPI *ExecuteScriptFn)(void*, const char*, const char*);
 typedef void (WINAPI *ReadyFn)(void*);
 typedef void (WINAPI *UpdateFn)(void*);
+typedef void* (WINAPI *MenuFactoryFn)(void*);
 
 static HANDLE g_log = nullptr;
 static FnWriteFile g_WriteFile = nullptr;
@@ -65,6 +66,10 @@ static u32 g_showHudVk = 0;
 static bool g_showHudKeyDown = false;
 static volatile u32 g_factoryCalls = 0;
 static volatile u32 g_readyCalls = 0;
+static MenuFactoryFn g_originalMenuFactory = nullptr;
+static ReadyFn g_originalMenuReady = nullptr;
+static uptr* g_menuReadyEntry = nullptr;
+static volatile u32 g_menuReadyCalls = 0;
 
 struct Config {
     bool enabled;
@@ -99,9 +104,13 @@ struct Config {
     bool multiLaunchHideInputPrompts;
     u32 multiLaunchHideDelayMs;
     u32 multiLaunchFadeDurationMs;
+
+    bool mainMenuHideNewGame;
+    bool mainMenuHideMissionSelect;
 };
 static Config g_cfg{};
 static char g_configScript[2048];
+static char g_menuConfigScript[256];
 
 static constexpr u32 kCoherentTimeDateStamp = 0x5E8F6E9A;
 static constexpr u32 kCoherentSizeOfImage = 0x329000;
@@ -109,6 +118,59 @@ static constexpr u32 kCoherentCheckSum = 0x00323A4A;
 static constexpr uptr kPublicViewVtableRva = 0x270780;
 static constexpr uptr kExecuteScriptRva = 0x82870;
 static constexpr uptr kViewPageOffset = 0xA8;
+
+static const char kMainMenuScript[] = R"JS(
+(function(){
+ if(window.__ControlDynamicHUDMainMenu)return;
+ var CFG=window.__CDH_MAINMENU_CONFIG||{hideNewGame:0,hideMissionSelect:0};
+ if(!CFG.hideNewGame&&!CFG.hideMissionSelect)return;
+ window.__ControlDynamicHUDMainMenu={version:'1.0H'};
+
+ var style=document.createElement('style');
+ style.id='cdh-mainmenu-style';
+ style.textContent='[data-cdh-mainmenu-hidden="1"]{display:none!important;}';
+ (document.head||document.documentElement).appendChild(style);
+
+ function norm(s){
+  return String(s||'').toLowerCase()
+   .replace(/[éèêë]/g,'e').replace(/[àâä]/g,'a')
+   .replace(/[îï]/g,'i').replace(/[ôö]/g,'o')
+   .replace(/[ùûü]/g,'u').replace(/ç/g,'c')
+   .replace(/\s+/g,' ').trim();
+ }
+ function matches(e,kind){
+  var raw=String(e.outerHTML||'');
+  var t=norm(e.textContent);
+  if(kind==='new'){
+   if(raw.indexOf('OnNewGameClicked')!==-1)return true;
+   return t==='new game'||t==='nouvelle partie';
+  }
+  if(raw.indexOf('OnMissionSelected')!==-1)return true;
+  return t==='mission select'||t==='select mission'||t==='selection de mission';
+ }
+ function leafClickable(e){
+  if(!e||!e.isConnected)return null;
+  var n=e;
+  for(var i=0;i<5&&n;i++,n=n.parentElement){
+   var tag=String(n.tagName||'').toLowerCase();
+   var role=String(n.getAttribute&&n.getAttribute('role')||'').toLowerCase();
+   if(tag==='button'||tag==='a'||role==='button'||(n.hasAttribute&&n.hasAttribute('tabindex')))return n;
+  }
+  return e;
+ }
+ function apply(){
+  var nodes=document.querySelectorAll('button,a,[role="button"],[tabindex]');
+  for(var i=0;i<nodes.length;i++){
+   var e=nodes[i];
+   if(CFG.hideNewGame&&matches(e,'new'))leafClickable(e).setAttribute('data-cdh-mainmenu-hidden','1');
+   if(CFG.hideMissionSelect&&matches(e,'mission'))leafClickable(e).setAttribute('data-cdh-mainmenu-hidden','1');
+  }
+ }
+ apply();
+ var obs=new MutationObserver(apply);
+ obs.observe(document.documentElement,{childList:true,subtree:true});
+})();
+)JS";
 
 static const char kForceHudScript[] =
 "if(window.__ControlDynamicHUDSuite&&window.__ControlDynamicHUDSuite.forceShowHUD)"
@@ -135,7 +197,7 @@ static const char kSuiteScript[] = R"JS(
  var mission={map:null,log:null,obs:null,timer:0,shown:true};
  var cross={el:null,timer:0,shown:true,hideLatched:false};
  var expedition={el:null,timer:0,shown:true};
- var multiLaunch={timer:0,tagged:[],bindingMatches:0};
+ var multiLaunch={timer:0,poll:0,saved:[],modified:0};
  var resumeTimer=0,heartbeat=0,diagTimer=0,rebindTimer=0,forceTimer=0,forceUntil=0;
 
  function isForced(){return forceUntil>Date.now();}
@@ -345,62 +407,77 @@ static const char kSuiteScript[] = R"JS(
   }
   return false;
  }
- function clearMultiLaunchTags(){
+ function interactionDataArrays(){
+  var out=[];
+  if(!window.g_interactionMarkers)return out;
+  var g=g_interactionMarkers;
+  try{
+   if(g.m_vecInteractionMarkersData)out.push(g.m_vecInteractionMarkersData);
+   if(g.m_interactionMarkersUIData&&g.m_interactionMarkersUIData.m_vecInteractionMarkersData)
+    out.push(g.m_interactionMarkersUIData.m_vecInteractionMarkersData);
+  }catch(e){}
+  return out;
+ }
+ function restoreMultiLaunchButtonOpacity(){
   clearTimer(multiLaunch);
-  for(var i=0;i<multiLaunch.tagged.length;i++){
-   var e=multiLaunch.tagged[i];
-   if(e&&e.isConnected)e.removeAttribute('data-cdh-multilaunch-input-hidden');
+  if(multiLaunch.poll){clearInterval(multiLaunch.poll);multiLaunch.poll=0;}
+  for(var i=0;i<multiLaunch.saved.length;i++){
+   var x=multiLaunch.saved[i];
+   try{if(x&&x.obj)x.obj.m_fButtonOpacity=x.value;}catch(e){}
   }
-  multiLaunch.tagged=[];
-  multiLaunch.bindingMatches=0;
+  multiLaunch.saved=[];
+  multiLaunch.modified=0;
  }
- function bindingText(e){
-  if(!e||!e.attributes)return '';
-  var out='';
-  for(var i=0;i<e.attributes.length;i++){
-   var a=e.attributes[i];
-   out+=' '+String(a.name||'')+'='+String(a.value||'');
-  }
-  return out.toLowerCase();
- }
- function isInteractionButtonBinding(e){
-  var t=bindingText(e);
-  if(t.indexOf('m_fbuttonopacity')!==-1)return true;
-  if(t.indexOf('buttonopacity')!==-1)return true;
-  var c=(String(e.className||'')+' '+String(e.id||'')).toLowerCase();
-  return /interaction[^ ]*(button|prompt)|(button|prompt)[^ ]*interaction/.test(c);
- }
- function applyMultiLaunchPromptHide(){
-  clearMultiLaunchTags();
+ function forceMultiLaunchButtonOpacityZero(){
   if(!active||!CFG.multiLaunchHideInputPrompts||isForced()||!multiLaunchActive())return;
-
-  var all=document.querySelectorAll('*');
-  for(var i=0;i<all.length;i++){
-   var e=all[i];
-   if(!isInteractionButtonBinding(e))continue;
-   e.setAttribute('data-cdh-multilaunch-input-hidden','1');
-   multiLaunch.tagged.push(e);
+  var arrays=interactionDataArrays();
+  var seen=[];
+  for(var a=0;a<arrays.length;a++){
+   var arr=arrays[a];
+   var n=Number(arr.length||0);
+   for(var i=0;i<n;i++){
+    var item=arr[i];
+    if(!item||typeof item.m_fButtonOpacity==='undefined')continue;
+    if(seen.indexOf(item)!==-1)continue;
+    seen.push(item);
+    var already=false;
+    for(var j=0;j<multiLaunch.saved.length;j++){
+     if(multiLaunch.saved[j].obj===item){already=true;break;}
+    }
+    if(!already){
+     var old=Number(item.m_fButtonOpacity);
+     multiLaunch.saved.push({obj:item,value:isFinite(old)?old:1});
+    }
+    try{item.m_fButtonOpacity=0;}catch(e){}
+   }
   }
-  multiLaunch.bindingMatches=multiLaunch.tagged.length;
+  multiLaunch.modified=multiLaunch.saved.length;
+ }
+ function beginMultiLaunchOpacityOverride(){
+  if(CFG.multiLaunchHideDelayMs===0){
+   forceMultiLaunchButtonOpacityZero();
+  }else if(!multiLaunch.timer){
+   multiLaunch.timer=setTimeout(function(){
+    multiLaunch.timer=0;
+    if(active&&!isForced()&&multiLaunchActive())forceMultiLaunchButtonOpacityZero();
+   },CFG.multiLaunchHideDelayMs);
+  }
+  if(!multiLaunch.poll){
+   multiLaunch.poll=setInterval(function(){
+    if(!active||isForced()||!multiLaunchActive()){
+     restoreMultiLaunchButtonOpacity();
+     return;
+    }
+    forceMultiLaunchButtonOpacityZero();
+   },100);
+  }
  }
  function updateMultiLaunchPrompts(){
-  if(!CFG.multiLaunchHideInputPrompts||!multiLaunchActive()){
-   clearMultiLaunchTags();
+  if(!CFG.multiLaunchHideInputPrompts||!multiLaunchActive()||isForced()){
+   restoreMultiLaunchButtonOpacity();
    return;
   }
-  if(isForced()){
-   clearMultiLaunchTags();
-   return;
-  }
-  clearTimer(multiLaunch);
-  if(CFG.multiLaunchHideDelayMs===0){
-   applyMultiLaunchPromptHide();
-   return;
-  }
-  multiLaunch.timer=setTimeout(function(){
-   multiLaunch.timer=0;
-   if(active&&!isForced()&&multiLaunchActive())applyMultiLaunchPromptHide();
-  },CFG.multiLaunchHideDelayMs);
+  beginMultiLaunchOpacityOverride();
  }
 
 
@@ -429,7 +506,7 @@ static const char kSuiteScript[] = R"JS(
   disconnectObserver(hp);disconnectObserver(mission);
   hp.bar=null;hp.fill=null;mission.map=null;mission.log=null;cross.el=null;expedition.el=null;
   CDH.health=false;CDH.mission=false;CDH.crosshair=false;CDH.expedition=false;
-  clearMultiLaunchTags();
+  restoreMultiLaunchButtonOpacity();
   updateDiag();
  }
  function resumeHud(){
@@ -449,14 +526,14 @@ static const char kSuiteScript[] = R"JS(
    (CFG.crosshairEnabled&&(!cross.el||!cross.el.isConnected))||
    (CFG.expeditionEnabled&&(!expedition.el||!expedition.el.isConnected));
   if(needs)scheduleRebind(0);
-  if(CFG.multiLaunchHideInputPrompts&&multiLaunchActive()&&!isForced())applyMultiLaunchPromptHide();
+  if(CFG.multiLaunchHideInputPrompts&&multiLaunchActive()&&!isForced())forceMultiLaunchButtonOpacityZero();
  }
 
  function forceShowHUD(){
   if(!active)return;
   forceUntil=Date.now()+CFG.showHudDurationMs;CDH.forceVisible=true;
   clearTimer(hp);clearTimer(mission);clearTimer(cross);clearTimer(expedition);clearTimer(multiLaunch);
-  clearMultiLaunchTags();
+  restoreMultiLaunchButtonOpacity();
   if(hp.bar)setHpHidden(false);
   if(mission.log)missionShow();
   if(cross.el)setCrossHidden(false);
@@ -477,9 +554,9 @@ static const char kSuiteScript[] = R"JS(
   if(!CFG.diagnostics)return;
   var p=document.getElementById('cdh-diagnostic');if(!p)return;
   p.textContent=
-   'Control Dynamic HUD v1.0G configurable suite\n'
+   'Control Dynamic HUD v1.0H configurable suite\n'
   +'HUD '+yes(hudVisible)+' | active '+yes(active)+' | force '+yes(isForced())+' | aim '+yes(isAiming)+' | key '+CFG.showHudKey+'\n'
-  +'health '+yes(CDH.health)+' | mission '+yes(CDH.mission)+' | crosshair '+yes(CDH.crosshair)+' | expedition '+yes(CDH.expedition)+' | multiLaunch '+yes(multiLaunchActive())+' bindings '+multiLaunch.bindingMatches+'\n'
+  +'health '+yes(CDH.health)+' | mission '+yes(CDH.mission)+' | crosshair '+yes(CDH.crosshair)+' | expedition '+yes(CDH.expedition)+' | multiLaunch '+yes(multiLaunchActive())+' opacityItems '+multiLaunch.modified+'\n'
   +'ammo '+yes(!!document.querySelector('.awesome-crosshair--ammo'))+' | enemyHP '+yes(!!document.querySelector('.enemy-health-container'))+' | energy '+yes(!!document.querySelector('.ability-resource-bar'))+'\n'
   +'pickup '+yes(!!document.querySelector('.pickup-notifications-container'))+' | interaction '+yes(!!document.querySelector('.interaction-marker-container'))+' | threat '+yes(!!document.querySelector('.threat-indicators'))+
    (CDH.lastError?'\nERR '+CDH.lastError:'');
@@ -696,6 +773,9 @@ static void load_config(WinApi& a){
     g_cfg.multiLaunchHideInputPrompts=a.GetPrivateProfileIntA("MultiLaunch","HideInputPrompts",1,ini)!=0;
     g_cfg.multiLaunchHideDelayMs=clamp_u32(a.GetPrivateProfileIntA("MultiLaunch","HideDelayMs",0,ini),0,60000);
     g_cfg.multiLaunchFadeDurationMs=clamp_u32(a.GetPrivateProfileIntA("MultiLaunch","FadeDurationMs",150,ini),0,10000);
+
+    g_cfg.mainMenuHideNewGame=a.GetPrivateProfileIntA("MainMenu","HideNewGame",0,ini)!=0;
+    g_cfg.mainMenuHideMissionSelect=a.GetPrivateProfileIntA("MainMenu","HideMissionSelect",0,ini)!=0;
 }
 static void build_config_script(){
     char* p=g_configScript;char* end=g_configScript+sizeof(g_configScript);
@@ -723,6 +803,13 @@ static void build_config_script(){
     p=app(p,end,",multiLaunchHideDelayMs:");p=app_u32(p,end,g_cfg.multiLaunchHideDelayMs);
     p=app(p,end,",multiLaunchFadeDurationMs:");p=app_u32(p,end,g_cfg.multiLaunchFadeDurationMs);
     p=app(p,end,"};");
+
+    char* m=g_menuConfigScript;char* mend=g_menuConfigScript+sizeof(g_menuConfigScript);
+    m=app(m,mend,"window.__CDH_MAINMENU_CONFIG={hideNewGame:");
+    m=app_u32(m,mend,g_cfg.mainMenuHideNewGame?1:0);
+    m=app(m,mend,",hideMissionSelect:");
+    m=app_u32(m,mend,g_cfg.mainMenuHideMissionSelect?1:0);
+    m=app(m,mend,"};");
 }
 static bool get_text(void* module,u8*& text,u32& size){
     u8* b=(u8*)module;if(!b||rd16(b)!=0x5A4D)return false;u32 e=rd32(b+0x3C);u8* nt=b+e;if(rd32(nt)!=0x4550)return false;u16 ns=rd16(nt+6),os=rd16(nt+20);u8* sec=nt+24+os;
@@ -782,6 +869,25 @@ static bool patch_ground_slam_target_circle(void* exe){
     if(g_FlushInstructionCache)g_FlushInstructionCache((HANDLE)(uptr)-1,(void*)lea,7);
     log_line("Ground Slam target circle disabled: slam_target_show redirected to slam_target_hide.");
     return true;
+}
+
+static const u8 kMenuFactoryPat[] = {
+0x48,0x89,0x4C,0x24,0x08,0x48,0x83,0xEC,0x38,0x48,0xC7,0x44,0x24,0x20,0xFE,0xFF,0xFF,0xFF,
+0xBA,0x08,0x00,0x00,0x00,0xB9,0xB8,0x07,0x00,0x00,0xFF,0x15,0,0,0,0,
+0x48,0x89,0x44,0x24,0x40,0x48,0x8B,0xC8,0xE8,0,0,0,0,0x90,0x48,0x83,0xC4,0x38,0xC3};
+static const char kMenuFactoryMask[] = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx????xxxxxxxxx????xxxxxxx";
+
+static uptr scan_menu_factory(void* exe,u32& count){
+    count=0;u8* t=nullptr;u32 sz=0;if(!get_text(exe,t,sz))return 0;
+    usize plen=sizeof(kMenuFactoryPat);uptr first=0;
+    for(u32 i=0;i+plen<=sz;++i){
+        bool ok=true;
+        for(usize j=0;j<plen;++j){
+            if(kMenuFactoryMask[j]=='x'&&t[i+j]!=kMenuFactoryPat[j]){ok=false;break;}
+        }
+        if(ok){if(!first)first=(uptr)(t+i);++count;i+=(u32)plen-1;}
+    }
+    return first;
 }
 
 static const u8 kFactoryPat[] = {
@@ -845,6 +951,64 @@ static void WINAPI HookUpdate(void* self){
 
     log_cstr("Show HUD hotkey pressed: ");log_cstr(g_cfg.showHudKey);log_bytes("\r\n",2);
     ((ExecuteScriptFn)execute)(view,kForceHudScript,nullptr);
+}
+
+static void restore_menu_ready_hook(){
+    if(!g_menuReadyEntry||!g_originalMenuReady||!g_VirtualProtect)return;
+    DWORD old=0;
+    if(g_VirtualProtect((void*)g_menuReadyEntry,sizeof(uptr),PAGE_EXECUTE_READWRITE,&old)){
+        *g_menuReadyEntry=(uptr)g_originalMenuReady;
+        DWORD dummy=0;g_VirtualProtect((void*)g_menuReadyEntry,sizeof(uptr),old,&dummy);
+        if(g_FlushInstructionCache)g_FlushInstructionCache((HANDLE)(uptr)-1,(void*)g_menuReadyEntry,sizeof(uptr));
+    }
+    g_menuReadyEntry=nullptr;
+}
+static void WINAPI HookMenuReady(void* self){
+    ++g_menuReadyCalls;
+    if(g_originalMenuReady)g_originalMenuReady(self);
+    void* view=(self&&g_pageGetView)?g_pageGetView(self):nullptr;
+    uptr vt=view?rdptr(view):0;
+    uptr exec=vt?rdptr((u8*)vt+61u*sizeof(uptr)):0;
+    uptr expectedVt=(uptr)g_coherentBase+kPublicViewVtableRva;
+    uptr expected=(uptr)g_coherentBase+kExecuteScriptRva;
+    if(!view||vt!=expectedVt||exec!=expected)return;
+    ((ExecuteScriptFn)exec)(view,g_menuConfigScript,nullptr);
+    ((ExecuteScriptFn)exec)(view,kMainMenuScript,nullptr);
+}
+static bool install_menu_ready_hook(void* menu){
+    if(!menu||!g_VirtualProtect)return false;
+    uptr vt=rdptr(menu);if(!vt)return false;
+    uptr* entry=(uptr*)(vt+28u*sizeof(uptr));
+    uptr original=*entry;if(!original)return false;
+    g_originalMenuReady=(ReadyFn)original;g_menuReadyEntry=entry;
+    DWORD old=0;
+    if(!g_VirtualProtect((void*)entry,sizeof(uptr),PAGE_EXECUTE_READWRITE,&old)){
+        g_menuReadyEntry=nullptr;g_originalMenuReady=nullptr;return false;
+    }
+    *entry=(uptr)&HookMenuReady;
+    DWORD dummy=0;g_VirtualProtect((void*)entry,sizeof(uptr),old,&dummy);
+    if(g_FlushInstructionCache)g_FlushInstructionCache((HANDLE)(uptr)-1,(void*)entry,sizeof(uptr));
+    log_line("Main menu onReadyForBindings hook installed.");
+    return true;
+}
+static void* WINAPI HookMenuFactory(void* a){
+    void* r=g_originalMenuFactory?g_originalMenuFactory(a):nullptr;
+    if(r&&!g_menuReadyEntry)install_menu_ready_hook(r);
+    return r;
+}
+static bool install_menu_factory_hook(WinApi& api,uptr target){
+    constexpr usize stolen=18;
+    u8* tramp=(u8*)api.VirtualAlloc(nullptr,64,MEM_COMMIT|MEM_RESERVE,PAGE_EXECUTE_READWRITE);
+    if(!tramp)return false;
+    for(usize i=0;i<stolen;++i)tramp[i]=((u8*)target)[i];
+    write_abs_jump(tramp+stolen,(void*)(target+stolen));
+    g_originalMenuFactory=(MenuFactoryFn)tramp;
+    DWORD old=0;if(!api.VirtualProtect((void*)target,stolen,PAGE_EXECUTE_READWRITE,&old))return false;
+    write_abs_jump((u8*)target,(void*)&HookMenuFactory);
+    for(usize i=14;i<stolen;++i)((u8*)target)[i]=0x90;
+    DWORD dummy=0;api.VirtualProtect((void*)target,stolen,old,&dummy);
+    api.FlushInstructionCache((HANDLE)(uptr)-1,(void*)target,stolen);
+    return true;
 }
 
 static void WINAPI HookReady(void* self){
@@ -974,7 +1138,7 @@ static bool install_hook(WinApi& api,uptr target){
     DWORD dummy=0;api.VirtualProtect((void*)target,stolen,old,&dummy);api.FlushInstructionCache((HANDLE)(uptr)-1,(void*)target,stolen);return true;
 }
 
-extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 106;}
+extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 107;}
 extern "C" __declspec(dllexport) void* CDH_RelocAnchor=(void*)&CDH_Version;
 
 extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
@@ -985,7 +1149,7 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     load_config(api);g_showHudVk=parse_vk(g_cfg.showHudKey);build_config_script();
     g_WriteFile=api.WriteFile;g_log=api.CreateFileW(L"plugins\\ControlDynamicHUD.log",GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
     if(!g_log||(uptr)g_log==INVALID_HANDLE_VALUE_U)return 1;
-    log_line("Control Dynamic HUD V1.0G MULTI-LAUNCH BUTTON BINDING TEST");log_line("Mode: validated crosshair + native hotkey + m_fButtonOpacity binding suppression during Multi Launch + Ground Slam target suppression");
+    log_line("Control Dynamic HUD V1.0H MENU + MULTILAUNCH MODEL TEST");log_line("Mode: validated HUD + optional main-menu cleanup + direct m_fButtonOpacity override during Multi Launch");
     log_cstr("Config: Enabled=");log_dec(g_cfg.enabled?1:0);log_cstr(" ShowHUDKey=");log_cstr(g_cfg.showHudKey);log_cstr(" VK=");log_hex(g_showHudVk);log_cstr(" ShowHUDDurationMs=");log_dec(g_cfg.showHudDurationMs);log_bytes("\r\n",2);
     if(!g_cfg.enabled){log_line("Mod disabled by INI; no hook installed.");return 1;}
     log_cstr("Executable: ");log_wide(first_module_name());log_bytes("\r\n",2);void* exe=first_module_base();log_cstr("Executable base: ");log_hex((uptr)exe);log_bytes("\r\n",2);
@@ -1005,5 +1169,16 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     s32 rel=*(s32*)(factory+0x32);uptr ctor=factory+0x36+(s64)rel;
     log_cstr("HUD constructor target: ");log_hex(ctor);log_bytes("\r\n",2);
     if(!install_hook(api,factory)){log_line("FAIL-OPEN: hook installation failed.");return 1;}
-    log_line("HUD factory hook installed.");return 1;
+    log_line("HUD factory hook installed.");
+
+    if(g_cfg.mainMenuHideNewGame||g_cfg.mainMenuHideMissionSelect){
+        u32 mc=0;uptr mf=scan_menu_factory(exe,mc);
+        log_cstr("Main menu factory signature matches: ");log_dec(mc);
+        log_cstr(" first=");log_hex(mf);log_bytes("\r\n",2);
+        if(mc==1&&mf&&install_menu_factory_hook(api,mf))log_line("Main menu factory hook installed.");
+        else log_line("Main menu cleanup requested but menu factory hook was not installed.");
+    }else{
+        log_line("Main menu cleanup disabled by INI.");
+    }
+    return 1;
 }
