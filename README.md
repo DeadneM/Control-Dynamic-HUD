@@ -15,11 +15,11 @@ V0.9 fixed the core lifecycle problems:
 - persistent slot-28 lifecycle hook survives pause/menu page recreation;
 - no legacy per-frame reinjection storm.
 
-### V1.0L configurable test branch
+### V1.0M configurable test branch
 
 Branch: `dev/v1.0-configurable-hud`
 
-V1.0L adds configuration through `plugins/ControlDynamicHUD.ini`.
+V1.0M adds configuration through `plugins/ControlDynamicHUD.ini`.
 
 Currently configurable:
 
@@ -113,6 +113,17 @@ HideDelayMs=1000
 FadeDurationMs=300
 ```
 
+### Crosshair center dot
+
+```ini
+[CrosshairDot]
+Enabled=1
+HideDelayMs=0
+FadeDurationMs=150
+```
+
+The tiny center dot is controlled independently from the rest of the crosshair. The default `HideDelayMs=0` keeps it hidden except during the global Show HUD override.
+
 ### Expedition forced-modifier panel
 
 ```ini
@@ -157,7 +168,7 @@ HideObjectIndicators=1
 HideDelayMs=0
 ```
 
-V1.0F through V1.0K targeted the wrong Multi Launch field. The exact current-build model layout is now audited from the registration functions themselves. The Launch block is at HUD+0x168. The main LaunchIndicator is the first object in that block and its m_bIsReticuleHidden field is +0x19. The three object-attached MultiLaunchIndicator objects are at +0x88/+0x120/+0x1B8; within each, m_bHasAimTarget is +0x40, m_bIsReticuleHidden is +0x41, and m_iValue is +0x44. V1.0L hides the main enemy/target Launch reticle and the three object-attached Multi Launch indicators through those exact native fields after the game's HUD update. F1 temporarily suspends suppression.
+The exact current-build model layout is audited from the registration functions themselves. The Launch block is at HUD+0x168. The main LaunchIndicator is the first object in that block and its m_bIsReticuleHidden field is +0x19. The three object-attached MultiLaunchIndicator objects are at +0x88/+0x120/+0x1B8; within each, m_bHasAimTarget is +0x40, m_bIsReticuleHidden is +0x41, and m_iValue is +0x44. V1.0L proved that m_bIsReticuleHidden alone did not remove the remaining device glyphs. V1.0M therefore hard-suppresses all three registered display fields together: HasAimTarget=0, ReticuleHidden=1 and Value=-1 after the game HUD update. F1 temporarily suspends suppression.
 
 All timing values are in milliseconds.
 
@@ -180,8 +191,9 @@ The important current-build findings are:
 ## Roadmap
 
 - V1.0D real-aim crosshair behavior validated;
-- validate V1.0L exact LaunchIndicator/MultiLaunchIndicator reticle suppression;
-- validate V1.0L non-destructive main-menu hiding plus native no-op guards for New Game and Mission Select;
+- Launch target reticle validated in V1.0L;
+- validate V1.0M hard Multi Launch suppression and independent center-dot hiding;
+- validate V1.0M collapsed main-menu rows with native no-op guards;
 - validate the hardened Expedition forced-modifier behavior;
 - add configurable behavior for additional HUD elements where safe;
 - optional in-game configuration overlay later;
