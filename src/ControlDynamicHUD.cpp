@@ -132,7 +132,7 @@ static const char kMainMenuScript[] = R"JS(
  if(window.__ControlDynamicHUDMainMenu)return;
  var CFG=window.__CDH_MAINMENU_CONFIG||{hideNewGame:0,hideMissionSelect:0};
  if(!CFG.hideNewGame&&!CFG.hideMissionSelect)return;
- window.__ControlDynamicHUDMainMenu={version:'1.0J'};
+ window.__ControlDynamicHUDMainMenu={version:'1.0K'};
 
  function norm(s){
   return String(s||'').toLowerCase()
@@ -241,7 +241,7 @@ static const char kSuiteScript[] = R"JS(
   multiLaunchHideInputPrompts:1,multiLaunchHideDelayMs:0,multiLaunchFadeDurationMs:150
  };
  var CDH=window.__ControlDynamicHUDSuite={
-  version:'1.0J',health:false,mission:false,crosshair:false,expedition:false,
+  version:'1.0K',health:false,mission:false,crosshair:false,expedition:false,
   hudVisible:true,active:true,lastError:'',forceVisible:false
  };
  var MODE={COMBAT:0,ADVENTURING:1,STORY:2,ACTION:3,EXAMINE:4,HIDDEN:5};
@@ -515,7 +515,7 @@ static const char kSuiteScript[] = R"JS(
   if(!CFG.diagnostics)return;
   var p=document.getElementById('cdh-diagnostic');if(!p)return;
   p.textContent=
-   'Control Dynamic HUD v1.0J configurable suite\n'
+   'Control Dynamic HUD v1.0K configurable suite\n'
   +'HUD '+yes(hudVisible)+' | active '+yes(active)+' | force '+yes(isForced())+' | aim '+yes(isAiming)+' | key '+CFG.showHudKey+'\n'
   +'health '+yes(CDH.health)+' | mission '+yes(CDH.mission)+' | crosshair '+yes(CDH.crosshair)+' | expedition '+yes(CDH.expedition)+'\n'
   +'ammo '+yes(!!document.querySelector('.awesome-crosshair--ammo'))+' | enemyHP '+yes(!!document.querySelector('.enemy-health-container'))+' | energy '+yes(!!document.querySelector('.ability-resource-bar'))+'\n'
@@ -882,67 +882,43 @@ static void restore_update_hook(){
     g_updateEntry=nullptr;
 }
 
-static bool native_multilaunch_active(void* hud){
-    if(!hud)return false;
-    uptr launch=rdptr((u8*)hud+0x168);
-    if(!launch)return false;
-    const uptr models[3]={launch+0x88,launch+0x120,launch+0x1B8};
-    for(int i=0;i<3;++i){
-        if(rd8((void*)(models[i]+0x60))!=0)return true;
-    }
-    return false;
-}
-
-static void native_apply_multilaunch_button_opacity(void* hud,u64 now){
+static void native_hide_multilaunch_indicators(void* hud,u64 now){
     if(!g_cfg.multiLaunchHideInputPrompts||!hud)return;
 
-    bool active=native_multilaunch_active(hud);
-    if(!active){
-        g_multiLaunchWasActive=false;
+    if(g_forceHudUntilMs&&now<g_forceHudUntilMs){
         g_multiLaunchActiveSinceMs=0;
-        g_multiLaunchLoggedActive=false;
+        g_multiLaunchWasActive=false;
         return;
     }
+
+    uptr launch=rdptr((u8*)hud+0x168);
+    if(!launch)return;
 
     if(!g_multiLaunchWasActive){
         g_multiLaunchWasActive=true;
         g_multiLaunchActiveSinceMs=now;
     }
 
-    if(g_forceHudUntilMs&&now<g_forceHudUntilMs)return;
-
     u64 elapsed=now>=g_multiLaunchActiveSinceMs?now-g_multiLaunchActiveSinceMs:0;
     if(elapsed<g_cfg.multiLaunchHideDelayMs)return;
 
-    float factor=0.0f;
-    u64 fadeElapsed=elapsed-g_cfg.multiLaunchHideDelayMs;
-    if(g_cfg.multiLaunchFadeDurationMs&&fadeElapsed<g_cfg.multiLaunchFadeDurationMs){
-        factor=1.0f-(float)fadeElapsed/(float)g_cfg.multiLaunchFadeDurationMs;
-        if(factor<0.0f)factor=0.0f;
-        if(factor>1.0f)factor=1.0f;
+    const uptr models[3]={launch+0x88,launch+0x120,launch+0x1B8};
+    u32 changed=0;
+    for(int i=0;i<3;++i){
+        u8* visible=(u8*)(models[i]+0x60);
+        if(*visible){
+            *visible=0;
+            ++changed;
+        }
     }
 
-    uptr model=rdptr((u8*)hud+0x160);
-    if(!model)return;
-    uptr begin=rdptr((void*)(model+0x10));
-    u32 count=rd32((void*)(model+0x18));
-    if(!begin||count>256)return;
-
-    for(u32 i=0;i<count;++i){
-        float* opacity=(float*)(begin+(uptr)i*0x18+0x10);
-        float v=*opacity;
-        if(factor<=0.0f)*opacity=0.0f;
-        else if(v>0.0f&&v<=1.5f)*opacity=v*factor;
-    }
-
-    if(!g_multiLaunchLoggedActive){
-        log_cstr("Native Multi Launch active; interaction entries=");log_dec(count);
-        log_cstr(" delayMs=");log_dec(g_cfg.multiLaunchHideDelayMs);
-        log_cstr(" fadeMs=");log_dec(g_cfg.multiLaunchFadeDurationMs);
+    if(changed){
+        log_cstr("Multi Launch indicators forced hidden; changed=");
+        log_dec(changed);
         log_bytes("\r\n",2);
-        g_multiLaunchLoggedActive=true;
     }
 }
+
 
 static void WINAPI HookUpdate(void* self){
     if(g_originalUpdate)g_originalUpdate(self);
@@ -971,7 +947,7 @@ static void WINAPI HookUpdate(void* self){
         }
     }
 
-    native_apply_multilaunch_button_opacity(self,now);
+    native_hide_multilaunch_indicators(self,now);
 }
 
 static void restore_menu_ready_hook(){
@@ -1161,7 +1137,7 @@ static bool install_hook(WinApi& api,uptr target){
     DWORD dummy=0;api.VirtualProtect((void*)target,stolen,old,&dummy);api.FlushInstructionCache((HANDLE)(uptr)-1,(void*)target,stolen);return true;
 }
 
-extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 109;}
+extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 110;}
 extern "C" __declspec(dllexport) void* CDH_RelocAnchor=(void*)&CDH_Version;
 
 extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
@@ -1173,7 +1149,7 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     load_config(api);g_showHudVk=parse_vk(g_cfg.showHudKey);build_config_script();
     g_WriteFile=api.WriteFile;g_log=api.CreateFileW(L"plugins\\ControlDynamicHUD.log",GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
     if(!g_log||(uptr)g_log==INVALID_HANDLE_VALUE_U)return 1;
-    log_line("Control Dynamic HUD V1.0J SAFE MENU REMOVAL + NATIVE MULTILAUNCH TEST");log_line("Mode: native Multi Launch m_fButtonOpacity override + hard-disabled optional main-menu entries");
+    log_line("Control Dynamic HUD V1.0K DIRECT MULTILAUNCH INDICATOR HIDE TEST");log_line("Mode: direct MultiLaunchIndicator visibility suppression + hard-disabled optional main-menu entries");
     log_cstr("Config: Enabled=");log_dec(g_cfg.enabled?1:0);log_cstr(" ShowHUDKey=");log_cstr(g_cfg.showHudKey);log_cstr(" VK=");log_hex(g_showHudVk);log_cstr(" ShowHUDDurationMs=");log_dec(g_cfg.showHudDurationMs);
     log_cstr(" HideNewGame=");log_dec(g_cfg.mainMenuHideNewGame?1:0);
     log_cstr(" HideMissionSelect=");log_dec(g_cfg.mainMenuHideMissionSelect?1:0);
