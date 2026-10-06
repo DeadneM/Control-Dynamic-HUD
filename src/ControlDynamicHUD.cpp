@@ -68,9 +68,10 @@ static FnGetAsyncKeyState g_GetAsyncKeyState = nullptr;
 static FnGetTickCount64 g_GetTickCount64 = nullptr;
 static u32 g_showHudVk = 0;
 static u64 g_forceHudUntilMs = 0;
-static u64 g_multiLaunchActiveSinceMs = 0;
-static bool g_multiLaunchWasActive = false;
-static bool g_multiLaunchLoggedActive = false;
+static u64 g_launchReticleSinceMs = 0;
+static u64 g_multiLaunchReticleSinceMs[3] = {0,0,0};
+static bool g_launchReticleLogOnce = false;
+static bool g_multiLaunchReticleLogOnce = false;
 static bool g_showHudKeyDown = false;
 static volatile u32 g_factoryCalls = 0;
 static volatile u32 g_readyCalls = 0;
@@ -109,7 +110,10 @@ struct Config {
 
     bool hideGroundSlamTargetCircle;
 
-    bool multiLaunchHideInputPrompts;
+    bool launchHideReticle;
+    u32 launchHideDelayMs;
+
+    bool multiLaunchHideObjectIndicators;
     u32 multiLaunchHideDelayMs;
 
     bool mainMenuHideNewGame;
@@ -131,7 +135,12 @@ static const char kMainMenuScript[] = R"JS(
  if(window.__ControlDynamicHUDMainMenu)return;
  var CFG=window.__CDH_MAINMENU_CONFIG||{hideNewGame:0,hideMissionSelect:0};
  if(!CFG.hideNewGame&&!CFG.hideMissionSelect)return;
- window.__ControlDynamicHUDMainMenu={version:'1.0K'};
+ window.__ControlDynamicHUDMainMenu={version:'1.0L'};
+
+ var style=document.createElement('style');
+ style.id='cdh-mainmenu-style';
+ style.textContent='[data-cdh-mainmenu-hidden="1"]{visibility:hidden!important;opacity:0!important;pointer-events:none!important;}';
+ (document.head||document.documentElement).appendChild(style);
 
  function norm(s){
   return String(s||'').toLowerCase()
@@ -148,77 +157,35 @@ static const char kMainMenuScript[] = R"JS(
  function rowFor(e,t){
   var n=e;
   for(var i=0;i<8&&n&&n.parentElement;i++){
-   var p=n.parentElement;
-   var pt=norm(p.textContent);
+   var p=n.parentElement,pt=norm(p.textContent);
    if(pt===t){n=p;continue;}
    if(p.children&&p.children.length>1)return n;
    break;
   }
   return n;
  }
- function hardDisable(e,kind){
-  if(!e)return;
-  try{
-   e.setAttribute('data-cdh-mainmenu-disabled',kind);
-   e.setAttribute('aria-hidden','true');
-   e.setAttribute('aria-disabled','true');
-   e.setAttribute('tabindex','-1');
-   if('disabled' in e)e.disabled=true;
-   e.style.pointerEvents='none';
-   e.style.visibility='hidden';
-   e.style.display='none';
-  }catch(x){}
- }
- function removeTargets(){
+ function hideTargets(){
   if(!document.body)return;
   var all=document.body.querySelectorAll('*');
-  var doomed=[];
   for(var i=0;i<all.length;i++){
    var e=all[i];
    if(e.children&&e.children.length>10)continue;
-   var t=norm(e.textContent),kind=targetKind(t);
-   if(!kind)continue;
+   var t=norm(e.textContent);
+   if(!targetKind(t))continue;
    var row=rowFor(e,t);
    if(!row)continue;
-   hardDisable(row,kind);
-   if(doomed.indexOf(row)===-1)doomed.push(row);
-  }
-  for(var j=0;j<doomed.length;j++){
-   var d=doomed[j];
-   try{if(d&&d.parentNode)d.parentNode.removeChild(d);}catch(x){}
+   row.setAttribute('data-cdh-mainmenu-hidden','1');
+   row.setAttribute('aria-hidden','true');
+   row.setAttribute('aria-disabled','true');
+   row.setAttribute('tabindex','-1');
   }
  }
- function blockedTarget(node){
-  var n=node;
-  for(var i=0;i<10&&n;i++,n=n.parentElement){
-   if(n.getAttribute&&n.getAttribute('data-cdh-mainmenu-disabled'))return true;
-   var t=norm(n.textContent);
-   if(targetKind(t))return true;
-  }
-  return false;
- }
- function guard(ev){
-  if(blockedTarget(ev.target)){
-   try{ev.preventDefault();}catch(x){}
-   try{ev.stopPropagation();}catch(x){}
-   try{ev.stopImmediatePropagation();}catch(x){}
-   return false;
-  }
- }
- ['click','dblclick','mousedown','mouseup','pointerdown','pointerup','touchstart','touchend','keydown','keyup','keypress','focusin']
-  .forEach(function(name){document.addEventListener(name,guard,true);});
-
- removeTargets();
- setTimeout(removeTargets,50);
- setTimeout(removeTargets,150);
- setTimeout(removeTargets,500);
- setTimeout(removeTargets,1200);
-
+ hideTargets();
+ setTimeout(hideTargets,100);setTimeout(hideTargets,500);setTimeout(hideTargets,1200);
  var queued=false;
  var obs=new MutationObserver(function(){
-  if(queued)return;
-  queued=true;
-  setTimeout(function(){queued=false;removeTargets();},0);
+  if(queued)return;queued=true;
+  setTimeout(function(){queued=false;hideTargets();},0);
  });
  obs.observe(document.documentElement,{childList:true,subtree:true,characterData:true});
 })();
@@ -236,11 +203,10 @@ static const char kSuiteScript[] = R"JS(
   healthEnabled:1,healthHideDelayMs:2000,healthFadeDurationMs:300,healthOpacityPercent:80,healthShowDuringCombat:1,healthThresholdPercent:100,
   missionEnabled:1,missionInitialHideDelayMs:2000,missionAfterMapCloseHideDelayMs:3000,missionUpdateVisibleMs:7000,missionFadeDurationMs:300,missionShowInMap:1,
   crosshairEnabled:1,crosshairHideDelayMs:1000,crosshairFadeDurationMs:300,
-  expeditionEnabled:1,expeditionHideDelayMs:2000,expeditionFadeDurationMs:300,
-  multiLaunchHideInputPrompts:1,multiLaunchHideDelayMs:0
+  expeditionEnabled:1,expeditionHideDelayMs:2000,expeditionFadeDurationMs:300
  };
  var CDH=window.__ControlDynamicHUDSuite={
-  version:'1.0K',health:false,mission:false,crosshair:false,expedition:false,
+  version:'1.0L',health:false,mission:false,crosshair:false,expedition:false,
   hudVisible:true,active:true,lastError:'',forceVisible:false
  };
  var MODE={COMBAT:0,ADVENTURING:1,STORY:2,ACTION:3,EXAMINE:4,HIDDEN:5};
@@ -514,7 +480,7 @@ static const char kSuiteScript[] = R"JS(
   if(!CFG.diagnostics)return;
   var p=document.getElementById('cdh-diagnostic');if(!p)return;
   p.textContent=
-   'Control Dynamic HUD v1.0K configurable suite\n'
+   'Control Dynamic HUD v1.0L configurable suite\n'
   +'HUD '+yes(hudVisible)+' | active '+yes(active)+' | force '+yes(isForced())+' | aim '+yes(isAiming)+' | key '+CFG.showHudKey+'\n'
   +'health '+yes(CDH.health)+' | mission '+yes(CDH.mission)+' | crosshair '+yes(CDH.crosshair)+' | expedition '+yes(CDH.expedition)+'\n'
   +'ammo '+yes(!!document.querySelector('.awesome-crosshair--ammo'))+' | enemyHP '+yes(!!document.querySelector('.enemy-health-container'))+' | energy '+yes(!!document.querySelector('.ability-resource-bar'))+'\n'
@@ -721,7 +687,10 @@ static void load_config(WinApi& a){
 
     g_cfg.hideGroundSlamTargetCircle=a.GetPrivateProfileIntA("GroundSlam","HideTargetCircle",1,ini)!=0;
 
-    g_cfg.multiLaunchHideInputPrompts=a.GetPrivateProfileIntA("MultiLaunch","HideInputPrompts",1,ini)!=0;
+    g_cfg.launchHideReticle=a.GetPrivateProfileIntA("Launch","HideTargetReticle",1,ini)!=0;
+    g_cfg.launchHideDelayMs=clamp_u32(a.GetPrivateProfileIntA("Launch","HideDelayMs",0,ini),0,60000);
+
+    g_cfg.multiLaunchHideObjectIndicators=a.GetPrivateProfileIntA("MultiLaunch","HideObjectIndicators",1,ini)!=0;
     g_cfg.multiLaunchHideDelayMs=clamp_u32(a.GetPrivateProfileIntA("MultiLaunch","HideDelayMs",0,ini),0,60000);
     g_cfg.mainMenuHideNewGame=a.GetPrivateProfileIntA("MainMenu","HideNewGame",0,ini)!=0;
     g_cfg.mainMenuHideMissionSelect=a.GetPrivateProfileIntA("MainMenu","HideMissionSelect",0,ini)!=0;
@@ -748,8 +717,7 @@ static void build_config_script(){
     p=app(p,end,",expeditionEnabled:");p=app_u32(p,end,g_cfg.expeditionEnabled?1:0);
     p=app(p,end,",expeditionHideDelayMs:");p=app_u32(p,end,g_cfg.expeditionHideDelayMs);
     p=app(p,end,",expeditionFadeDurationMs:");p=app_u32(p,end,g_cfg.expeditionFadeDurationMs);
-    p=app(p,end,",multiLaunchHideInputPrompts:");p=app_u32(p,end,g_cfg.multiLaunchHideInputPrompts?1:0);
-    p=app(p,end,",multiLaunchHideDelayMs:");p=app_u32(p,end,g_cfg.multiLaunchHideDelayMs);
+
     p=app(p,end,"};");
 
     char* m=g_menuConfigScript;char* mend=g_menuConfigScript+sizeof(g_menuConfigScript);
@@ -819,6 +787,45 @@ static bool patch_ground_slam_target_circle(void* exe){
     return true;
 }
 
+static const u8 kNewGameActionPat[] = {
+0x40,0x53,0x48,0x83,0xEC,0x20,0x83,0xB9,0xA0,0x02,0x00,0x00,0x00,0x48,0x8B,0xD9,0x76,0x30};
+static const u8 kMissionSelectActionPat[] = {
+0x48,0x8B,0xC4,0x55,0x57,0x41,0x56,0x48,0x8D,0x6C,0x24,0x90,0x48,0x81,0xEC,0x70,0x01,0x00,0x00,
+0x48,0xC7,0x44,0x24,0x30,0xFE,0xFF,0xFF,0xFF,0x48,0x89,0x58,0x18,0x48,0x89,0x70,0x20};
+
+static uptr scan_exact_text_pattern(void* exe,const u8* pat,usize plen,u32& count){
+    count=0;u8* t=nullptr;u32 sz=0;if(!get_text(exe,t,sz))return 0;
+    uptr first=0;
+    for(u32 i=0;i+plen<=sz;++i){
+        bool ok=true;
+        for(usize j=0;j<plen;++j){if(t[i+j]!=pat[j]){ok=false;break;}}
+        if(ok){if(!first)first=(uptr)(t+i);++count;i+=(u32)plen-1;}
+    }
+    return first;
+}
+static bool patch_action_to_ret(uptr target,const char* label){
+    if(!target||!g_VirtualProtect)return false;
+    DWORD old=0;
+    if(!g_VirtualProtect((void*)target,1,PAGE_EXECUTE_READWRITE,&old))return false;
+    *(u8*)target=0xC3;
+    DWORD dummy=0;g_VirtualProtect((void*)target,1,old,&dummy);
+    if(g_FlushInstructionCache)g_FlushInstructionCache((HANDLE)(uptr)-1,(void*)target,1);
+    log_cstr(label);log_line(" native action disabled.");
+    return true;
+}
+static void patch_main_menu_actions(void* exe){
+    if(g_cfg.mainMenuHideNewGame){
+        u32 n=0;uptr p=scan_exact_text_pattern(exe,kNewGameActionPat,sizeof(kNewGameActionPat),n);
+        log_cstr("New Game native action signature matches: ");log_dec(n);log_cstr(" first=");log_hex(p);log_bytes("\r\n",2);
+        if(n==1)patch_action_to_ret(p,"New Game");
+    }
+    if(g_cfg.mainMenuHideMissionSelect){
+        u32 n=0;uptr p=scan_exact_text_pattern(exe,kMissionSelectActionPat,sizeof(kMissionSelectActionPat),n);
+        log_cstr("Mission Select native action signature matches: ");log_dec(n);log_cstr(" first=");log_hex(p);log_bytes("\r\n",2);
+        if(n==1)patch_action_to_ret(p,"Mission Select");
+    }
+}
+
 static const u8 kMenuFactoryPat[] = {
 0x48,0x89,0x4C,0x24,0x08,0x48,0x83,0xEC,0x38,0x48,0xC7,0x44,0x24,0x20,0xFE,0xFF,0xFF,0xFF,
 0xBA,0x08,0x00,0x00,0x00,0xB9,0xB8,0x07,0x00,0x00,0xFF,0x15,0,0,0,0,
@@ -878,40 +885,62 @@ static void restore_update_hook(){
     g_updateEntry=nullptr;
 }
 
-static void native_hide_multilaunch_indicators(void* hud,u64 now){
-    if(!g_cfg.multiLaunchHideInputPrompts||!hud)return;
-
-    if(g_forceHudUntilMs&&now<g_forceHudUntilMs){
-        g_multiLaunchActiveSinceMs=0;
-        g_multiLaunchWasActive=false;
-        return;
-    }
-
+static void native_hide_launch_reticles(void* hud,u64 now){
+    if(!hud)return;
     uptr launch=rdptr((u8*)hud+0x168);
     if(!launch)return;
 
-    if(!g_multiLaunchWasActive){
-        g_multiLaunchWasActive=true;
-        g_multiLaunchActiveSinceMs=now;
+    bool forced=g_forceHudUntilMs&&now<g_forceHudUntilMs;
+    if(forced){
+        g_launchReticleSinceMs=0;
+        for(int i=0;i<3;++i)g_multiLaunchReticleSinceMs[i]=0;
+        return;
     }
 
-    u64 elapsed=now>=g_multiLaunchActiveSinceMs?now-g_multiLaunchActiveSinceMs:0;
-    if(elapsed<g_cfg.multiLaunchHideDelayMs)return;
-
-    const uptr models[3]={launch+0x88,launch+0x120,launch+0x1B8};
-    u32 changed=0;
-    for(int i=0;i<3;++i){
-        u8* visible=(u8*)(models[i]+0x60);
-        if(*visible){
-            *visible=0;
-            ++changed;
+    // LaunchIndicator is the first object in the Launch block.
+    // m_bIsReticuleHidden is offset +0x19.
+    if(g_cfg.launchHideReticle){
+        u8* hidden=(u8*)(launch+0x19);
+        if(*hidden==0){
+            if(!g_launchReticleSinceMs)g_launchReticleSinceMs=now;
+            u64 elapsed=now>=g_launchReticleSinceMs?now-g_launchReticleSinceMs:0;
+            if(elapsed>=g_cfg.launchHideDelayMs){
+                *hidden=1;
+                if(!g_launchReticleLogOnce){
+                    log_line("Launch target reticle forced hidden through LaunchIndicator.m_bIsReticuleHidden.");
+                    g_launchReticleLogOnce=true;
+                }
+            }
+        }else{
+            g_launchReticleSinceMs=0;
         }
+    }else{
+        g_launchReticleSinceMs=0;
     }
 
-    if(changed){
-        log_cstr("Multi Launch indicators forced hidden; changed=");
-        log_dec(changed);
-        log_bytes("\r\n",2);
+    // MultiLaunchIndicator objects live at +0x88/+0x120/+0x1B8.
+    // Their m_bIsReticuleHidden field is offset +0x41.
+    if(g_cfg.multiLaunchHideObjectIndicators){
+        const uptr offs[3]={0x88,0x120,0x1B8};
+        for(int i=0;i<3;++i){
+            uptr model=launch+offs[i];
+            u8* hidden=(u8*)(model+0x41);
+            if(*hidden==0){
+                if(!g_multiLaunchReticleSinceMs[i])g_multiLaunchReticleSinceMs[i]=now;
+                u64 elapsed=now>=g_multiLaunchReticleSinceMs[i]?now-g_multiLaunchReticleSinceMs[i]:0;
+                if(elapsed>=g_cfg.multiLaunchHideDelayMs){
+                    *hidden=1;
+                    if(!g_multiLaunchReticleLogOnce){
+                        log_line("Multi Launch object indicators forced hidden through MultiLaunchIndicator.m_bIsReticuleHidden.");
+                        g_multiLaunchReticleLogOnce=true;
+                    }
+                }
+            }else{
+                g_multiLaunchReticleSinceMs[i]=0;
+            }
+        }
+    }else{
+        for(int i=0;i<3;++i)g_multiLaunchReticleSinceMs[i]=0;
     }
 }
 
@@ -943,7 +972,7 @@ static void WINAPI HookUpdate(void* self){
         }
     }
 
-    native_hide_multilaunch_indicators(self,now);
+    native_hide_launch_reticles(self,now);
 }
 
 static void restore_menu_ready_hook(){
@@ -1133,7 +1162,7 @@ static bool install_hook(WinApi& api,uptr target){
     DWORD dummy=0;api.VirtualProtect((void*)target,stolen,old,&dummy);api.FlushInstructionCache((HANDLE)(uptr)-1,(void*)target,stolen);return true;
 }
 
-extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 110;}
+extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 111;}
 extern "C" __declspec(dllexport) void* CDH_RelocAnchor=(void*)&CDH_Version;
 
 extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
@@ -1145,7 +1174,7 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     load_config(api);g_showHudVk=parse_vk(g_cfg.showHudKey);build_config_script();
     g_WriteFile=api.WriteFile;g_log=api.CreateFileW(L"plugins\\ControlDynamicHUD.log",GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
     if(!g_log||(uptr)g_log==INVALID_HANDLE_VALUE_U)return 1;
-    log_line("Control Dynamic HUD V1.0K DIRECT MULTILAUNCH INDICATOR HIDE TEST");log_line("Mode: direct MultiLaunchIndicator visibility suppression + hard-disabled optional main-menu entries");
+    log_line("Control Dynamic HUD V1.0L EXACT LAUNCH RETICLE + SAFE MENU TEST");log_line("Mode: exact Launch/MultiLaunch reticle-hidden fields + non-destructive menu hiding + native action guards");
     log_cstr("Config: Enabled=");log_dec(g_cfg.enabled?1:0);log_cstr(" ShowHUDKey=");log_cstr(g_cfg.showHudKey);log_cstr(" VK=");log_hex(g_showHudVk);log_cstr(" ShowHUDDurationMs=");log_dec(g_cfg.showHudDurationMs);
     log_cstr(" HideNewGame=");log_dec(g_cfg.mainMenuHideNewGame?1:0);
     log_cstr(" HideMissionSelect=");log_dec(g_cfg.mainMenuHideMissionSelect?1:0);
@@ -1153,6 +1182,7 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     if(!g_cfg.enabled){log_line("Mod disabled by INI; no hook installed.");return 1;}
     log_cstr("Executable: ");log_wide(first_module_name());log_bytes("\r\n",2);void* exe=first_module_base();log_cstr("Executable base: ");log_hex((uptr)exe);log_bytes("\r\n",2);
     patch_ground_slam_target_circle(exe);
+    patch_main_menu_actions(exe);
     void* coh=find_module("coherentuigt.dll");g_coherentBase=coh;log_cstr("CoherentUIGT.dll: ");if(coh){log_hex((uptr)coh);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
     void* ui=find_module("ui_rmdwin10_f.dll");log_cstr("ui_rmdwin10_f.dll: ");if(ui){log_hex((uptr)ui);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
     const char* pageGetViewName="?getView@Page@ui@@QEAAPEAVView@UIGT@Coherent@@XZ";
