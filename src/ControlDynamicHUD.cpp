@@ -45,6 +45,7 @@ typedef void* (WINAPI *FactoryFn)(void*, void*, void*, void*);\ntypedef void* (W
 static HANDLE g_log = nullptr;
 static FnWriteFile g_WriteFile = nullptr;
 static FactoryFn g_originalFactory = nullptr;
+static GetNativeViewFn g_getNativeView = nullptr;
 static volatile u32 g_factoryCalls = 0;
 
 static inline void* get_peb() { void* peb; __asm__ __volatile__("movq %%gs:0x60, %0" : "=r"(peb)); return peb; }
@@ -161,8 +162,13 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     log_line("Control Dynamic HUD V0.3 NATIVE VIEW PROBE");log_line("Mode: HUD factory + ui::System::getNativeView probe only (no visual changes)");
     log_cstr("Executable: ");log_wide(first_module_name());log_bytes("\r\n",2);void* exe=first_module_base();log_cstr("Executable base: ");log_hex((uptr)exe);log_bytes("\r\n",2);
     void* coh=find_module("coherentuigt.dll");log_cstr("CoherentUIGT.dll: ");if(coh){log_hex((uptr)coh);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
+    void* ui=find_module("ui_rmdwin10_f.dll");log_cstr("ui_rmdwin10_f.dll: ");if(ui){log_hex((uptr)ui);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
+    const char* getNativeViewName="?getNativeView@System@ui@@QEAAPEAVView@UIGT@Coherent@@I@Z";
+    g_getNativeView=ui?(GetNativeViewFn)resolve_export(ui,getNativeViewName):nullptr;
+    log_cstr("ui::System::getNativeView export: ");if(g_getNativeView)log_hex((uptr)g_getNativeView);else log_cstr("NOT FOUND");log_bytes("\r\n",2);
     u32 count=0;uptr factory=scan_factory(exe,count);log_cstr("HUD factory signature matches: ");log_dec(count);log_cstr(" first=");log_hex(factory);log_bytes("\r\n",2);
     if(count!=1||!factory){log_line("FAIL-OPEN: unique HUD factory not found; no hook installed.");return 1;}
+    if(!g_getNativeView){log_line("FAIL-OPEN: getNativeView export not found; no hook installed.");return 1;}
     s32 rel=*(s32*)(factory+0x32);uptr ctor=factory+0x36+(s64)rel;
     log_cstr("HUD constructor target: ");log_hex(ctor);log_bytes("\r\n",2);
     if(!install_hook(api,factory)){log_line("FAIL-OPEN: hook installation failed.");return 1;}
