@@ -362,7 +362,7 @@ static const char kSuiteScript[] = R"JS(
  var hp={bar:null,fill:null,obs:null,timer:0,shown:true};
  var mission={map:null,log:null,obs:null,timer:0,shown:true};
  var cross={el:null,timer:0,shown:true,hideLatched:false};
- var dot={root:null,el:null,pseudo:'',timer:0,hidden:false,obs:null};
+ var dot={root:null,el:null,pseudo:'',timer:0,hidden:false,obs:null,marks:[]};
  var expedition={el:null,timer:0,shown:true};
  var resumeTimer=0,heartbeat=0,diagTimer=0,rebindTimer=0,forceTimer=0,forceUntil=0;
 
@@ -535,20 +535,31 @@ static const char kSuiteScript[] = R"JS(
  }
 
 
+ function clearDotVisualMarks(){
+  if(dot.root)dot.root.setAttribute('data-cdh-dot-hidden','0');
+  var marks=dot.marks||[];
+  for(var i=0;i<marks.length;i++){
+   var e=marks[i]&&marks[i].el;if(!e)continue;
+   try{
+    e.removeAttribute('data-cdh-center-dot-hidden');
+    e.removeAttribute('data-cdh-dot-pseudo-before');
+    e.removeAttribute('data-cdh-dot-pseudo-after');
+   }catch(x){}
+  }
+  dot.marks=[];
+  dot.el=null;dot.pseudo='';
+ }
  function clearDotMark(){
   if(dot.obs){try{dot.obs.disconnect();}catch(x){}dot.obs=null;}
-  if(dot.root)dot.root.setAttribute('data-cdh-dot-hidden','0');
-  if(dot.el){
-   dot.el.removeAttribute('data-cdh-center-dot-hidden');
-   dot.el.removeAttribute('data-cdh-dot-pseudo-before');
-   dot.el.removeAttribute('data-cdh-dot-pseudo-after');
-  }
+  clearDotVisualMarks();
  }
  function isDotLikeRect(e,cx,cy,maxSize,maxDelta){
   if(!e||e===document.body||e===document.documentElement)return false;
   var r;try{r=e.getBoundingClientRect();}catch(x){return false;}
   var w=r.width,h=r.height;
   if(!(w>=0.25&&h>=0.25&&w<=maxSize&&h<=maxSize))return false;
+  var ratio=w>h?w/h:h/w;
+  if(ratio>1.85)return false;
   var dx=Math.abs((r.left+w*0.5)-cx),dy=Math.abs((r.top+h*0.5)-cy);
   if(dx>maxDelta||dy>maxDelta)return false;
   var cs;try{cs=window.getComputedStyle(e);}catch(x2){cs=null;}
@@ -557,85 +568,72 @@ static const char kSuiteScript[] = R"JS(
   if(/ammo|target|enemy|lock|charge|hit|damage|prompt|health|mission|interaction/.test(sg))return false;
   return true;
  }
- function semanticDot(root){
+ function collectCenterDots(root){
+  var out=[],seen=[];
+  function add(e,pseudo){
+   if(!e||e===root&&pseudo==='')return;
+   for(var k=0;k<seen.length;k++)if(seen[k]===e+'|'+pseudo)return;
+   seen.push(e+'|'+pseudo);out.push({el:e,pseudo:pseudo||''});
+  }
+  var rr=root.getBoundingClientRect(),cx=window.innerWidth*0.5,cy=window.innerHeight*0.5;
+  if(rr&&rr.width>2&&rr.height>2){cx=rr.left+rr.width*0.5;cy=rr.top+rr.height*0.5;}
+
   var sels=['.awesome-crosshair__dot','.awesome-crosshair-dot','.crosshair-dot',
    '[class*="crosshair"][class*="dot"]','[class*="reticul"][class*="dot"]',
    '[class*="reticle"][class*="dot"]','[id*="crosshair"][id*="dot"]',
    '[class*="crosshair"][class*="center"]','[class*="reticul"][class*="center"]'];
-  for(var i=0;i<sels.length;i++){
-   try{var e=root.querySelector(sels[i]);if(e&&e!==root)return e;}catch(x){}
-   try{var g=document.querySelector(sels[i]);if(g&&g!==root)return g;}catch(x2){}
+  for(var si=0;si<sels.length;si++){
+   try{var sq=root.querySelectorAll(sels[si]);for(var sj=0;sj<sq.length;sj++)add(sq[sj],'');}catch(x){}
+   try{var gq=document.querySelectorAll(sels[si]);for(var gj=0;gj<gq.length;gj++)if(isDotLikeRect(gq[gj],cx,cy,32,10))add(gq[gj],'');}catch(x2){}
   }
-  return null;
- }
- function geometricDot(root){
-  var rr=root.getBoundingClientRect(),cx=window.innerWidth*0.5,cy=window.innerHeight*0.5;
-  if(rr&&rr.width>2&&rr.height>2){cx=rr.left+rr.width*0.5;cy=rr.top+rr.height*0.5;}
-  var all=root.querySelectorAll('*'),best=null,bestScore=1000000;
-  for(var i=0;i<all.length&&i<256;i++){
+
+  var all=root.querySelectorAll('*');
+  for(var i=0;i<all.length&&i<512;i++){
    var e=all[i];
-   if(!isDotLikeRect(e,cx,cy,24,8))continue;
-   var r=e.getBoundingClientRect(),w=r.width,h=r.height;
-   var dx=Math.abs((r.left+w*0.5)-cx),dy=Math.abs((r.top+h*0.5)-cy);
-   var sg=(String(e.className||'')+' '+String(e.id||'')+' '+String(e.tagName||'')).toLowerCase();
-   var score=(dx+dy)*12+Math.abs(w-h)*6+(w*h)*0.05;
-   if(/dot|center|centre|circle/.test(sg))score-=100;
-   if(e.children&&e.children.length)score+=20;
-   if(score<bestScore){bestScore=score;best=e;}
+   if(isDotLikeRect(e,cx,cy,24,8))add(e,'');
   }
-  return best;
- }
- function globalCenterDot(root){
-  var cx=window.innerWidth*0.5,cy=window.innerHeight*0.5,best=null,bestArea=999999;
+
   if(document.elementsFromPoint){
-   var stack=[];try{stack=document.elementsFromPoint(cx,cy)||[];}catch(x){}
-   for(var i=0;i<stack.length;i++){
-    var e=stack[i];
-    if(e===root)continue;
-    if(!isDotLikeRect(e,cx,cy,24,5))continue;
-    var r=e.getBoundingClientRect(),area=r.width*r.height;
-    if(area<bestArea){best=e;bestArea=area;}
-   }
+   var stack=[];try{stack=document.elementsFromPoint(cx,cy)||[];}catch(x3){}
+   for(var st=0;st<stack.length;st++)
+    if(isDotLikeRect(stack[st],cx,cy,24,6))add(stack[st],'');
   }
-  if(best)return best;
-  var q=document.querySelectorAll('svg circle,svg ellipse,svg rect,svg path,[class*="dot"],[id*="dot"],[class*="center"],[id*="center"]');
-  for(var j=0;j<q.length&&j<384;j++){
-   var e2=q[j];
-   if(e2===root||!isDotLikeRect(e2,cx,cy,24,5))continue;
-   var r2=e2.getBoundingClientRect(),area2=r2.width*r2.height;
-   if(area2<bestArea){best=e2;bestArea=area2;}
-  }
-  return best;
- }
- function pseudoDot(root){
-  var nodes=[root],q=root.querySelectorAll('*');
-  for(var i=0;i<q.length&&i<128;i++)nodes.push(q[i]);
-  for(var n=0;n<nodes.length;n++){
-   var e=nodes[n],sg=(String(e.className||'')+' '+String(e.id||'')).toLowerCase();
-   for(var p=0;p<2;p++){
-    var ps=p===0?'::before':'::after',cs;try{cs=window.getComputedStyle(e,ps);}catch(x){cs=null;}
+
+  var svg=document.querySelectorAll('svg circle,svg ellipse,svg rect,svg path,[class*="dot"],[id*="dot"],[class*="center"],[id*="center"]');
+  for(var v=0;v<svg.length&&v<512;v++)
+   if(isDotLikeRect(svg[v],cx,cy,24,6))add(svg[v],'');
+
+  var nodes=[root];
+  for(var n=0;n<all.length&&n<192;n++)nodes.push(all[n]);
+  for(var ni=0;ni<nodes.length;ni++){
+   var pe=nodes[ni],sg=(String(pe.className||'')+' '+String(pe.id||'')).toLowerCase();
+   for(var pi=0;pi<2;pi++){
+    var ps=pi===0?'::before':'::after',cs;try{cs=window.getComputedStyle(pe,ps);}catch(x4){cs=null;}
     if(!cs||cs.display==='none'||cs.visibility==='hidden'||parseFloat(cs.opacity||'1')<0.02)continue;
-    var w=parseFloat(cs.width),h=parseFloat(cs.height);
+    var w=parseFloat(cs.width),h=parseFloat(cs.height),ratio=(w>h?w/h:h/w);
+    if(!(w>=0.25&&h>=0.25&&w<=24&&h<=24&&ratio<=1.85))continue;
     var pos=(String(cs.left||'')+' '+String(cs.top||'')+' '+String(cs.transform||'')).toLowerCase();
-    var visual=(String(cs.content||'')+' '+String(cs.backgroundImage||'')+' '+String(cs.backgroundColor||'')+' '+String(cs.borderRadius||'')).toLowerCase();
-    var sized=(w>=0.25&&h>=0.25&&w<=24&&h<=24&&Math.abs(w-h)<=8);
-    if((sized&&(/dot|center|centre/.test(sg)||pos.indexOf('50%')>=0))||
-       (e===root&&pos.indexOf('50%')>=0&&visual.indexOf('none')<0))
-      return {el:e,pseudo:p===0?'before':'after'};
+    if(pe===root||/dot|center|centre/.test(sg)||pos.indexOf('50%')>=0)
+      add(pe,pi===0?'before':'after');
    }
   }
-  return null;
+  return out;
  }
- function setDotHidden(v){
+ function applyDotMarks(v){
   if(!dot.root||!dot.root.isConnected)return;
   dot.root.setAttribute('data-cdh-dot-hidden',v?'1':'0');
-  if(dot.el){
-   if(dot.pseudo==='before')dot.el.setAttribute('data-cdh-dot-pseudo-before',v?'1':'0');
-   else if(dot.pseudo==='after')dot.el.setAttribute('data-cdh-dot-pseudo-after',v?'1':'0');
-   else dot.el.setAttribute('data-cdh-center-dot-hidden',v?'1':'0');
+  var marks=dot.marks||[];
+  for(var i=0;i<marks.length;i++){
+   var m=marks[i],e=m&&m.el;if(!e)continue;
+   try{
+    if(m.pseudo==='before')e.setAttribute('data-cdh-dot-pseudo-before',v?'1':'0');
+    else if(m.pseudo==='after')e.setAttribute('data-cdh-dot-pseudo-after',v?'1':'0');
+    else e.setAttribute('data-cdh-center-dot-hidden',v?'1':'0');
+   }catch(x){}
   }
   dot.hidden=v;
  }
+ function setDotHidden(v){applyDotMarks(v);}
  function scheduleCrosshairDotHide(){
   clearTimer(dot);
   if(!active||!CFG.crosshairDotEnabled||!dot.root)return;
@@ -647,43 +645,30 @@ static const char kSuiteScript[] = R"JS(
    if(active&&!isForced()&&dot.root&&dot.root.isConnected)setDotHidden(true);
   },CFG.crosshairDotHideDelayMs);
  }
- function findDot(root){
-  var e=semanticDot(root);
-  if(!e)e=geometricDot(root);
-  if(!e)e=globalCenterDot(root);
-  if(e)return {el:e,pseudo:''};
-  var pd=pseudoDot(root);
-  if(pd)return pd;
-  return {el:null,pseudo:''};
- }
  function bindCrosshairDot(){
   if(!active||!CFG.crosshairDotEnabled)return false;
   var root=document.querySelector('.awesome-crosshair');
   if(!root){
-   clearTimer(dot);clearDotMark();dot.root=null;dot.el=null;dot.pseudo='';dot.hidden=false;CDH.crosshairDot=false;return false;
+   clearTimer(dot);clearDotMark();dot.root=null;dot.hidden=false;CDH.crosshairDot=false;return false;
   }
   var rootChanged=root!==dot.root;
   if(rootChanged){
-   clearTimer(dot);clearDotMark();dot.root=root;dot.el=null;dot.pseudo='';dot.hidden=false;
+   clearTimer(dot);clearDotMark();dot.root=root;dot.hidden=false;
    try{
     dot.obs=new MutationObserver(function(){if(active&&CFG.crosshairDotEnabled)scheduleRebind(0);});
     dot.obs.observe(root,{childList:true,subtree:true,attributes:true,attributeFilter:['class','style','transform']});
    }catch(x){}
+  }else if(dot.hidden){
+   // Temporarily reveal previous marks while rescanning so stacked dots are not hidden from geometry tests.
+   applyDotMarks(false);
   }
-  var found=findDot(root),candidate=found.el,pseudo=found.pseudo||'';
-  var changed=rootChanged||candidate!==dot.el||pseudo!==dot.pseudo;
-  if(changed){
-   if(dot.el&&dot.el!==candidate){
-    dot.el.removeAttribute('data-cdh-center-dot-hidden');
-    dot.el.removeAttribute('data-cdh-dot-pseudo-before');
-    dot.el.removeAttribute('data-cdh-dot-pseudo-after');
-   }
-   dot.el=candidate;dot.pseudo=pseudo;dot.hidden=false;
-  }
-  CDH.crosshairDot=!!candidate;
+  dot.marks=collectCenterDots(root);
+  if(dot.marks.length){dot.el=dot.marks[0].el;dot.pseudo=dot.marks[0].pseudo||'';}
+  else {dot.el=null;dot.pseudo='';}
+  CDH.crosshairDot=true;
   if(isForced())setDotHidden(false);
-  else if(candidate&&(changed||(!dot.hidden&&!dot.timer)))scheduleCrosshairDotHide();
-  return !!candidate;
+  else scheduleCrosshairDotHide();
+  return true;
  }
 
  function setExpeditionHidden(v){
@@ -1810,7 +1795,7 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
         log_line("Mission Select MenuOptions suppression not installed; DOM fallback remains active.");
     if(!install_multilaunch_update_hook(api,exe))
         log_line("Multi Launch pre-notification hook not installed; feature fails open.");
-    log_line("CrosshairDot V1.0R keeps the validated Launch/ability-dot suppression; normal center dot remains on a separate unresolved UI path.");
+    log_line("CrosshairDot V1.0R hides every small square center candidate instead of stopping after the first Launch/ability dot; min-reticle override remains disabled.");
     void* coh=find_module("coherentuigt.dll");g_coherentBase=coh;log_cstr("CoherentUIGT.dll: ");if(coh){log_hex((uptr)coh);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
     void* ui=find_module("ui_rmdwin10_f.dll");log_cstr("ui_rmdwin10_f.dll: ");if(ui){log_hex((uptr)ui);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
     const char* pageGetViewName="?getView@Page@ui@@QEAAPEAVView@UIGT@Coherent@@XZ";
