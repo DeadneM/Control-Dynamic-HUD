@@ -157,7 +157,11 @@ HideNewGame=0
 HideMissionSelect=0
 ```
 
-**Release rule:** `HideNewGame=0` and `HideMissionSelect=0` are the public release defaults. This V1.0S test package temporarily uses `1/1` only for validation. `Mission Select` is already removed correctly at the native `MenuOptions.m_bHasMissionSaves` model layer. `New Game` has no equivalent visibility field in `MenuOptions`, so V1.0S treats it as the sole remaining static Coherent entry: its matched branch is physically removed and empty wrapper nodes are pruned upward.
+**Release rule:** `HideNewGame=0` and `HideMissionSelect=0` are the public release defaults. Test packages may temporarily use `1/1` for validation.
+
+These options are not only cosmetic. Their purpose is to **protect a completed-game autosave**. After the story is finished, returning through Mission Select can move progression back to an earlier mission and subsequent autosaves can replace the completed-state save. Starting New Game can replace/delete the active completed-game save path entirely. The intended protected workflow is therefore: once the game is completed, continue playing only from the completed-state autosave.
+
+`Mission Select` is already removed correctly at the native `MenuOptions.m_bHasMissionSaves` model layer. `New Game` has no equivalent visibility field in `MenuOptions`, so it remains the only unresolved menu-construction path. Native action guards for both entries are intentionally kept as a second safety layer even after their visual entries are removed.
 
 ### Multi Launch object-attached indicators
 
