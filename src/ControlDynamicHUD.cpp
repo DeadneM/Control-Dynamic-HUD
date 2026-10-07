@@ -53,6 +53,7 @@ typedef void (WINAPI *ReadyFn)(void*);
 typedef void (WINAPI *UpdateFn)(void*);
 typedef void (WINAPI *MultiLaunchUpdateFn)(void*,u32,void*,void*);
 typedef void (WINAPI *CrosshairUpdateFn)(void*,void*,void*);
+typedef void (WINAPI *HighlightRefreshFn)(void*);
 typedef void* (WINAPI *MenuFactoryFn)(void*);
 
 static HANDLE g_log = nullptr;
@@ -88,6 +89,21 @@ static bool g_launchSelectionSuppressed = false;
 static u8* g_reg2kLaunchBranch = nullptr;
 static u8 g_reg2kLaunchOriginal[2] = {0,0};
 static bool g_reg2kLaunchPatched = false;
+
+// V1.0U split paths.
+// Icon: LaunchIndicator.m_bHighlightVisible publication.
+// Outline: HighlightComponentState.m_out_pRenderObject publication.
+static u8* g_launchIconVisibleBytes = nullptr;
+static u8 g_launchIconOriginal[2] = {0,0};
+static bool g_launchIconHidden = false;
+static u8* g_launchOutlineRenderLoad = nullptr;
+static u8 g_launchOutlineOriginal[4] = {0,0,0,0};
+static bool g_launchOutlineHidden = false;
+static uptr g_highlightRefreshTarget = 0;
+static HighlightRefreshFn g_originalHighlightRefresh = nullptr;
+static void* g_lastHighlightState = nullptr;
+static u64 g_lastHighlightStateMs = 0;
+static bool g_forceHudWasActive = false;
 
 static MultiLaunchUpdateFn g_originalMultiLaunchUpdate = nullptr;
 static CrosshairUpdateFn g_originalCrosshairUpdate = nullptr;
@@ -142,7 +158,9 @@ struct Config {
     bool launchHideReticle;
     u32 launchHideDelayMs;
 
-    bool multiLaunchHideObjectIndicators;
+    bool multiLaunchHideObjectIndicators; // legacy compatibility
+    bool multiLaunchHideIcon;
+    bool multiLaunchHideOutline;
     u32 multiLaunchHideDelayMs;
 
     bool mainMenuHideNewGame;
@@ -163,8 +181,8 @@ static const char kMainMenuScript[] = R"JS(
 (function(){
  var CFG=window.__CDH_MAINMENU_CONFIG||{hideNewGame:0,hideMissionSelect:0};
  if(!CFG.hideNewGame&&!CFG.hideMissionSelect)return;
- if(window.__ControlDynamicHUDMainMenu&&window.__ControlDynamicHUDMainMenu.version==='1.0T')return;
- window.__ControlDynamicHUDMainMenu={version:'1.0T'};
+ if(window.__ControlDynamicHUDMainMenu&&window.__ControlDynamicHUDMainMenu.version==='1.0U')return;
+ window.__ControlDynamicHUDMainMenu={version:'1.0U'};
 
  var style=document.getElementById('cdh-mainmenu-style');
  if(!style){style=document.createElement('style');style.id='cdh-mainmenu-style';(document.head||document.documentElement).appendChild(style);}
@@ -410,7 +428,7 @@ static const char kSuiteScript[] = R"JS(
   expeditionEnabled:1,expeditionHideDelayMs:2000,expeditionFadeDurationMs:300
  };
  var CDH=window.__ControlDynamicHUDSuite={
-  version:'1.0T',health:false,mission:false,crosshair:false,expedition:false,
+  version:'1.0U',health:false,mission:false,crosshair:false,expedition:false,
   hudVisible:true,active:true,lastError:'',forceVisible:false
  };
  var MODE={COMBAT:0,ADVENTURING:1,STORY:2,ACTION:3,EXAMINE:4,HIDDEN:5};
@@ -1042,7 +1060,11 @@ static void load_config(WinApi& a){
     g_cfg.launchHideReticle=a.GetPrivateProfileIntA("Launch","HideTargetReticle",1,ini)!=0;
     g_cfg.launchHideDelayMs=clamp_u32(a.GetPrivateProfileIntA("Launch","HideDelayMs",0,ini),0,60000);
 
-    g_cfg.multiLaunchHideObjectIndicators=a.GetPrivateProfileIntA("MultiLaunch","HideObjectIndicators",1,ini)!=0;
+    s32 legacyMultiLaunch=(s32)a.GetPrivateProfileIntA("MultiLaunch","HideObjectIndicators",-1,ini);
+    s32 splitDefault=legacyMultiLaunch>=0?legacyMultiLaunch:1;
+    g_cfg.multiLaunchHideObjectIndicators=legacyMultiLaunch>0;
+    g_cfg.multiLaunchHideIcon=a.GetPrivateProfileIntA("MultiLaunch","HideIcon",splitDefault,ini)!=0;
+    g_cfg.multiLaunchHideOutline=a.GetPrivateProfileIntA("MultiLaunch","HideOutline",splitDefault,ini)!=0;
     g_cfg.multiLaunchHideDelayMs=clamp_u32(a.GetPrivateProfileIntA("MultiLaunch","HideDelayMs",0,ini),0,60000);
     g_cfg.mainMenuHideNewGame=a.GetPrivateProfileIntA("MainMenu","HideNewGame",0,ini)!=0;
     g_cfg.mainMenuHideMissionSelect=a.GetPrivateProfileIntA("MainMenu","HideMissionSelect",0,ini)!=0;
@@ -1229,6 +1251,87 @@ static u32 scan_masked_all(void* exe,const u8* pat,const char* mask,usize plen,u
         }
     }
     return count;
+}
+
+// V1.0U: split the broad NoHighlight result into the two native outputs it was skipping.
+// Icon path: LaunchIndicator.m_bHighlightVisible at model offset +0x60.
+// Vanilla B1 01 = mov cl,1. Patch 32 C9 = xor cl,cl.
+static const u8 kLaunchIconVisiblePat[] = {
+0xB1,0x01,0x88,0x4C,0x24,0x40,0xEB,0x02,0x32,0xC9,
+0x41,0x38,0x4E,0x60,0x74,0x09,0x41,0x88,0x4E,0x60};
+
+// Outline path: HighlightComponentState publishes m_out_pRenderObject.
+// Patch only "mov rax,[rsi+78h]" -> "xor rax,rax ; nop".
+static const u8 kLaunchOutlinePat[] = {
+0x48,0x8D,0x96,0x88,0x00,0x00,0x00,0x48,0x8B,0x46,0x78,
+0x48,0x39,0x02,0x74,0x17,0x48,0x89,0x02};
+static const u8 kHighlightRefreshPrologue[] = {
+0x48,0x8B,0xC4,0x55,0x41,0x54,0x41,0x55,0x41,0x56,0x41,0x57,
+0x48,0x8D,0x68,0xA1,0x48,0x81,0xEC,0xA0,0x00,0x00,0x00};
+
+static bool locate_split_launch_highlights(void* exe){
+    bool ok=true;
+    if(g_cfg.multiLaunchHideIcon){
+        u32 n=0;uptr p=scan_exact_one(exe,kLaunchIconVisiblePat,sizeof(kLaunchIconVisiblePat),n);
+        log_cstr("Launch icon m_bHighlightVisible signature matches: ");log_dec(n);
+        log_cstr(" first=");log_hex(p);log_bytes("\r\n",2);
+        if(n!=1||!p)ok=false;
+        else{
+            g_launchIconVisibleBytes=(u8*)p;
+            g_launchIconOriginal[0]=g_launchIconVisibleBytes[0];
+            g_launchIconOriginal[1]=g_launchIconVisibleBytes[1];
+        }
+    }
+    if(g_cfg.multiLaunchHideOutline){
+        u32 n=0;uptr p=scan_exact_one(exe,kLaunchOutlinePat,sizeof(kLaunchOutlinePat),n);
+        log_cstr("Launch outline m_out_pRenderObject signature matches: ");log_dec(n);
+        log_cstr(" first=");log_hex(p);log_bytes("\r\n",2);
+        if(n!=1||!p)ok=false;
+        else{
+            g_launchOutlineRenderLoad=(u8*)(p+7);
+            for(int i=0;i<4;++i)g_launchOutlineOriginal[i]=g_launchOutlineRenderLoad[i];
+
+            // Current audited HighlightComponent callback starts 0x4F7 bytes before
+            // the uniquely identified output-publication sequence. Verify before use.
+            uptr candidate=p-0x4F7;
+            bool valid=true;
+            for(usize i=0;i<sizeof(kHighlightRefreshPrologue);++i)
+                if(((u8*)candidate)[i]!=kHighlightRefreshPrologue[i]){valid=false;break;}
+            if(valid){
+                g_highlightRefreshTarget=candidate;
+                log_cstr("HighlightComponent refresh callback verified: ");log_hex(candidate);log_bytes("\r\n",2);
+            }else{
+                log_line("HighlightComponent refresh callback verification failed; F1 outline refresh will rely on normal game updates.");
+            }
+        }
+    }
+    return ok;
+}
+
+static void set_launch_icon_hidden(bool hide){
+    if(!g_launchIconVisibleBytes||!g_VirtualProtect||hide==g_launchIconHidden)return;
+    DWORD old=0;if(!g_VirtualProtect(g_launchIconVisibleBytes,2,PAGE_EXECUTE_READWRITE,&old))return;
+    if(hide){g_launchIconVisibleBytes[0]=0x32;g_launchIconVisibleBytes[1]=0xC9;}
+    else{g_launchIconVisibleBytes[0]=g_launchIconOriginal[0];g_launchIconVisibleBytes[1]=g_launchIconOriginal[1];}
+    DWORD dummy=0;g_VirtualProtect(g_launchIconVisibleBytes,2,old,&dummy);
+    if(g_FlushInstructionCache)g_FlushInstructionCache((HANDLE)(uptr)-1,g_launchIconVisibleBytes,2);
+    g_launchIconHidden=hide;
+    log_line(hide?"Launch/Multi Launch object icon hidden through m_bHighlightVisible.":"Launch/Multi Launch object icon publication restored.");
+}
+
+static void set_launch_outline_hidden(bool hide){
+    if(!g_launchOutlineRenderLoad||!g_VirtualProtect||hide==g_launchOutlineHidden)return;
+    DWORD old=0;if(!g_VirtualProtect(g_launchOutlineRenderLoad,4,PAGE_EXECUTE_READWRITE,&old))return;
+    if(hide){
+        g_launchOutlineRenderLoad[0]=0x48;g_launchOutlineRenderLoad[1]=0x31;
+        g_launchOutlineRenderLoad[2]=0xC0;g_launchOutlineRenderLoad[3]=0x90;
+    }else{
+        for(int i=0;i<4;++i)g_launchOutlineRenderLoad[i]=g_launchOutlineOriginal[i];
+    }
+    DWORD dummy=0;g_VirtualProtect(g_launchOutlineRenderLoad,4,old,&dummy);
+    if(g_FlushInstructionCache)g_FlushInstructionCache((HANDLE)(uptr)-1,g_launchOutlineRenderLoad,4);
+    g_launchOutlineHidden=hide;
+    log_line(hide?"Launch/Multi Launch white outline output suppressed.":"Launch/Multi Launch white outline publication restored.");
 }
 
 // Adapted from the approach used by reg2k's NoHighlight v1.0.
@@ -1540,6 +1643,12 @@ static void WINAPI HookMultiLaunchUpdate(void* block,u32 idx,void* a3,void* targ
     if(g_originalMultiLaunchUpdate)g_originalMultiLaunchUpdate(block,idx,a3,targetInfo);
 }
 
+static void WINAPI HookHighlightRefresh(void* self){
+    g_lastHighlightState=self;
+    g_lastHighlightStateMs=g_GetTickCount64?g_GetTickCount64():0;
+    if(g_originalHighlightRefresh)g_originalHighlightRefresh(self);
+}
+
 static void WINAPI HookCrosshairUpdate(void* crosshair,void* a2,void* source){
     u64 now=g_GetTickCount64?g_GetTickCount64():0;
     bool forced=g_forceHudUntilMs&&now<g_forceHudUntilMs;
@@ -1582,6 +1691,14 @@ static bool install_code_detour(WinApi& api,uptr target,void* hook,void** origin
     for(usize i=14;i<stolen;++i)((u8*)target)[i]=0x90;
     DWORD dummy=0;api.VirtualProtect((void*)target,stolen,old,&dummy);
     api.FlushInstructionCache((HANDLE)(uptr)-1,(void*)target,stolen);
+    return true;
+}
+
+static bool install_highlight_refresh_hook(WinApi& api){
+    if(!g_cfg.multiLaunchHideOutline||!g_highlightRefreshTarget)return true;
+    if(!install_code_detour(api,g_highlightRefreshTarget,(void*)&HookHighlightRefresh,
+                            (void**)&g_originalHighlightRefresh,23))return false;
+    log_line("HighlightComponent refresh hook installed for F1 outline republish.");
     return true;
 }
 
@@ -1714,8 +1831,19 @@ static void WINAPI HookUpdate(void* self){
     }
 
     bool forcedNow=g_forceHudUntilMs&&now<g_forceHudUntilMs;
-    if(g_cfg.multiLaunchHideObjectIndicators)
-        set_reg2k_launch_highlight_suppressed(!forcedNow);
+    if(g_cfg.multiLaunchHideIcon)set_launch_icon_hidden(!forcedNow);
+    if(g_cfg.multiLaunchHideOutline)set_launch_outline_hidden(!forcedNow);
+
+    if(forcedNow&&!g_forceHudWasActive&&g_cfg.multiLaunchHideOutline&&
+       g_originalHighlightRefresh&&g_lastHighlightState&&now>=g_lastHighlightStateMs&&
+       now-g_lastHighlightStateMs<2000){
+        // The old broad NoHighlight patch restored code but did not republish state.
+        // Re-run the recently active HighlightComponent callback once after restoring
+        // the outline publication path.
+        g_originalHighlightRefresh(g_lastHighlightState);
+        log_line("F1 Show HUD forced an immediate HighlightComponent outline republish.");
+    }
+    g_forceHudWasActive=forcedNow;
     native_hide_launch_reticles(self,now);
 }
 
@@ -1906,7 +2034,7 @@ static bool install_hook(WinApi& api,uptr target){
     DWORD dummy=0;api.VirtualProtect((void*)target,stolen,old,&dummy);api.FlushInstructionCache((HANDLE)(uptr)-1,(void*)target,stolen);return true;
 }
 
-extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 119;}
+extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 120;}
 extern "C" __declspec(dllexport) void* CDH_RelocAnchor=(void*)&CDH_Version;
 
 extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
@@ -1918,10 +2046,12 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     load_config(api);g_showHudVk=parse_vk(g_cfg.showHudKey);build_config_script();
     g_WriteFile=api.WriteFile;g_log=api.CreateFileW(L"plugins\\ControlDynamicHUD.log",GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
     if(!g_log||(uptr)g_log==INVALID_HANDLE_VALUE_U)return 1;
-    log_line("Control Dynamic HUD V1.0T REG2K NOHIGHLIGHT METHOD TEST");log_line("Mode: reg2k NoHighlight Launch branch patch + validated center-dot mask + New Game compaction");
+    log_line("Control Dynamic HUD V1.0U SPLIT HIGHLIGHT TEST");log_line("Mode: split Launch icon/outline suppression + validated center-dot mask + save-protection menu guards");
     log_cstr("Config: Enabled=");log_dec(g_cfg.enabled?1:0);log_cstr(" ShowHUDKey=");log_cstr(g_cfg.showHudKey);log_cstr(" VK=");log_hex(g_showHudVk);log_cstr(" ShowHUDDurationMs=");log_dec(g_cfg.showHudDurationMs);
     log_cstr(" HideNewGame=");log_dec(g_cfg.mainMenuHideNewGame?1:0);
     log_cstr(" HideMissionSelect=");log_dec(g_cfg.mainMenuHideMissionSelect?1:0);
+    log_cstr(" MultiLaunchHideIcon=");log_dec(g_cfg.multiLaunchHideIcon?1:0);
+    log_cstr(" MultiLaunchHideOutline=");log_dec(g_cfg.multiLaunchHideOutline?1:0);
     log_bytes("\r\n",2);
     if(!g_cfg.enabled){log_line("Mod disabled by INI; no hook installed.");return 1;}
     log_cstr("Executable: ");log_wide(first_module_name());log_bytes("\r\n",2);void* exe=first_module_base();log_cstr("Executable base: ");log_hex((uptr)exe);log_bytes("\r\n",2);
@@ -1932,15 +2062,18 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
         log_line("Mission Select MenuOptions suppression not installed; DOM fallback remains active.");
     if(g_cfg.mainMenuHideNewGame)
         log_line("New Game has no MenuOptions visibility flag; V1.0T prunes and compacts its Coherent branch.");
-    log_line("V1.0R/V1.0S selection-highlight event path superseded by reg2k NoHighlight code-branch method.");
-    if(g_cfg.multiLaunchHideObjectIndicators){
-        if(locate_reg2k_launch_highlight(exe)){
-            set_reg2k_launch_highlight_suppressed(true);
+    log_line("V1.0U splits the reg2k NoHighlight result into independent icon and outline native outputs.");
+    if(g_cfg.multiLaunchHideIcon||g_cfg.multiLaunchHideOutline){
+        if(locate_split_launch_highlights(exe)){
+            if(g_cfg.multiLaunchHideOutline&&!install_highlight_refresh_hook(api))
+                log_line("HighlightComponent refresh hook unavailable; F1 outline refresh may wait for the next game update.");
+            if(g_cfg.multiLaunchHideIcon)set_launch_icon_hidden(true);
+            if(g_cfg.multiLaunchHideOutline)set_launch_outline_hidden(true);
         }else{
-            log_line("reg2k NoHighlight Launch signature unavailable; Multi Launch highlight feature fails open.");
+            log_line("Split Launch highlight signatures unavailable; affected feature fails open.");
         }
     }
-    log_line("CrosshairDot V1.0T keeps the validated V1.0S resolution-scaled center mask unchanged.");
+    log_line("CrosshairDot V1.0U keeps the validated V1.0S center mask unchanged.");
     void* coh=find_module("coherentuigt.dll");g_coherentBase=coh;log_cstr("CoherentUIGT.dll: ");if(coh){log_hex((uptr)coh);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
     void* ui=find_module("ui_rmdwin10_f.dll");log_cstr("ui_rmdwin10_f.dll: ");if(ui){log_hex((uptr)ui);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
     const char* pageGetViewName="?getView@Page@ui@@QEAAPEAVView@UIGT@Coherent@@XZ";
