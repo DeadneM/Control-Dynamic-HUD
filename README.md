@@ -15,11 +15,11 @@ V0.9 fixed the core lifecycle problems:
 - persistent slot-28 lifecycle hook survives pause/menu page recreation;
 - no legacy per-frame reinjection storm.
 
-### V1.0O menu + center-dot test candidate
+### V1.0P hard-suppression test candidate
 
-Branch: `test/v1.0o-menu-dot`
+Branch: `test/v1.0p-hard-suppress`
 
-V1.0O keeps the cumulative V1.0N feature set and replaces two rejected/fragile paths: the center dot no longer abuses `m_fMinReticuleSize`, and main-menu cleanup now identifies rows through native action/model state plus UI action attributes and localized text.
+V1.0P keeps the cumulative V1.0O feature set and hardens the three still-unresolved paths from in-game testing: the remaining main-menu ghost row is physically removed from the DOM, center-dot discovery now searches the global screen center including unnamed SVG/pseudo primitives, and Multi Launch suppression now changes both `HasAimTarget` and `ReticuleHidden` inside the updater before Coherent notification.
 
 Currently configurable:
 
@@ -121,7 +121,7 @@ Enabled=1
 HideDelayMs=0
 ```
 
-V1.0N's native `CrosshairData + 0xAC` experiment was rejected after the field was confirmed to be `m_fMinReticuleSize`, part of reticle sizing/scatter rather than an independent center-dot visibility switch. V1.0O disables that native override and targets the center dot independently in the Coherent HUD: semantic dot selectors are tried first, followed by a centered small-element geometry fallback and a pseudo-element fallback. The default `HideDelayMs=0` requests an always-hidden center dot, while the global Show HUD hotkey temporarily restores it.
+V1.0N's native `CrosshairData + 0xAC` experiment was rejected after the field was confirmed to be `m_fMinReticuleSize`, part of reticle sizing/scatter rather than an independent center-dot visibility switch. V1.0O's HUD-local search did not hide the visible dot in game. V1.0P therefore searches semantic dot selectors, small centered descendants, `document.elementsFromPoint()` at the screen center, centered SVG primitives and pseudo-elements. The default `HideDelayMs=0` requests an always-hidden center dot, while the global Show HUD hotkey temporarily restores it.
 
 ### Expedition forced-modifier panel
 
@@ -157,7 +157,7 @@ HideNewGame=0
 HideMissionSelect=0
 ```
 
-In this V1.0O test package both options are enabled so the two paths can be validated immediately. Native action guards still make `New Game` and `Mission Select` no-ops. `Mission Select` also keeps the V1.0N native `MenuOptions.m_bHasMissionSaves=false` suppression. The audited model has no equivalent `ShowNewGame` boolean, so V1.0O strengthens the UI-side removal for `New Game` by matching action/binding attributes as well as localized text, hiding the complete interactive row and skipping it during keyboard navigation.
+**Release rule:** `HideNewGame=0` and `HideMissionSelect=0` are the public release defaults. This V1.0P test package temporarily uses `1/1` only so both paths can be validated immediately. Native action guards still make `New Game` and `Mission Select` no-ops while enabled. `Mission Select` also keeps the native `MenuOptions.m_bHasMissionSaves=false` suppression. V1.0O reduced the menu from two ghost positions to one; V1.0P physically removes the matched UI row instead of only hiding it, targeting that final ghost position.
 
 ### Multi Launch object-attached indicators
 
@@ -169,7 +169,7 @@ HideDelayMs=0
 
 The exact current-build model layout is audited from the registration functions themselves. The Launch block is at HUD+0x168. The three object-attached MultiLaunchIndicator objects are at +0x88/+0x120/+0x1B8; within each, m_bHasAimTarget is +0x40, m_bIsReticuleHidden is +0x41, and m_iValue is +0x44.
 
-V1.0L and V1.0M proved that writing these fields after the HUD update is too late: the Multi Launch updater resets m_bIsReticuleHidden to false and publishes that state to Coherent first. V1.0N therefore hooks the real Multi Launch updater and changes its hidden-state publication before the model notification. Once the independent HideDelayMs expires, the updater publishes ReticuleHidden=true itself. F1 temporarily restores the vanilla publication path. This pre-notification implementation is the first timing-correct Multi Launch candidate and still needs in-game validation.
+V1.0L and V1.0M proved that writing these fields after the HUD update is too late. V1.0N moved `ReticuleHidden` suppression before notification but still did not hide the visible indicators in game. V1.0P patches the updater's own state generation so a suppressed slot publishes both `HasAimTarget=false` and `ReticuleHidden=true` before Coherent notification. With `HideDelayMs=0`, suppression is unconditional outside the F1 Show HUD override. The log records the post-update values for each slot, which lets the next test distinguish a bad field mapping from a different visual model.
 
 All timing values are in milliseconds.
 
@@ -194,9 +194,9 @@ The important current-build findings are:
 - V1.0D real-aim crosshair behavior validated;
 - Launch target reticle validated in V1.0L;
 - V1.0M post-update Multi Launch suppression and DOM center-dot search rejected;
-- validate V1.0N pre-notification Multi Launch suppression;
-- validate V1.0O independent Coherent center-dot suppression;
-- validate V1.0O main-menu cleanup: native Mission Select model suppression plus robust New Game row removal/navigation skip;
+- validate V1.0P dual pre-notification Multi Launch suppression;
+- validate V1.0P global center-dot suppression;
+- validate V1.0P physical main-menu row removal and confirm the last ghost slot is gone;
 - validate the hardened Expedition forced-modifier behavior;
 - add configurable behavior for additional HUD elements where safe;
 - optional in-game configuration overlay later;
