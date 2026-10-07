@@ -15,11 +15,11 @@ V0.9 fixed the core lifecycle problems:
 - persistent slot-28 lifecycle hook survives pause/menu page recreation;
 - no legacy per-frame reinjection storm.
 
-### V1.0T reg2k NoHighlight-method test candidate
+### V1.0U split Launch highlight test candidate
 
-Branch: `test/v1.0t-reg2k-nohighlight`
+Branch: `test/v1.0u-split-highlight`
 
-V1.0T keeps the validated V1.0S center-dot mask unchanged. For Launch/Multi Launch object highlighting it abandons the unsuccessful model/event experiments and adopts the low-level method used by reg2k's NoHighlight v1.0: a unique Launch code signature is scanned at runtime and the conditional branch at signature +4 is changed from `0F 85` to `90 E9`, forcing the game's own skip path while preserving the original relative displacement. F1 temporarily restores the original bytes and the patch is re-applied when the Show HUD override expires. New Game remains the only unresolved main-menu entry; V1.0T additionally compacts lower menu siblings when the removed branch came from a fixed/absolute layout.
+V1.0U keeps the validated V1.0S center-dot mask unchanged. V1.0T confirmed that reg2k's NoHighlight engine-level Launch path is the correct family of code, but its broad branch skip removes both the object-attached icon and the white world outline together. V1.0U splits those outputs: `LaunchIndicator.m_bHighlightVisible` controls the icon, while `HighlightComponentState.m_out_pRenderObject` controls the white outline. Each can now be disabled independently. For the main-menu save-protection path, V1.0U also identifies and skips only the exact `Page::bind("OnNewGameClicked", ...)` block before Coherent binding, while retaining the native action guard and DOM cleanup as safety fallbacks.
 
 Currently configurable:
 
@@ -161,19 +161,26 @@ HideMissionSelect=0
 
 These options are not only cosmetic. Their purpose is to **protect a completed-game autosave**. After the story is finished, returning through Mission Select can move progression back to an earlier mission and subsequent autosaves can replace the completed-state save. Starting New Game can replace/delete the active completed-game save path entirely. The intended protected workflow is therefore: once the game is completed, continue playing only from the completed-state autosave.
 
-`Mission Select` is already removed correctly at the native `MenuOptions.m_bHasMissionSaves` model layer. `New Game` has no equivalent visibility field in `MenuOptions`, so it remains the only unresolved menu-construction path. Native action guards for both entries are intentionally kept as a second safety layer even after their visual entries are removed.
+`Mission Select` is already removed correctly at the native `MenuOptions.m_bHasMissionSaves` model layer. `New Game` has no equivalent visibility field in `MenuOptions`. V1.0U therefore attacks the next-earliest proven layer: the page constructor's exact `Page::bind("OnNewGameClicked", ...)` block is identified by resolving the RIP-relative binding name among the surrounding bindings and is skipped before Coherent receives it. Native action guards for both entries are intentionally kept as a second safety layer even after their visual entries are removed.
 
-### Multi Launch object-attached indicators
+### Multi Launch icon and white outline
 
 ```ini
 [MultiLaunch]
-HideObjectIndicators=1
-HideDelayMs=0
+HideIcon=1
+HideOutline=1
 ```
 
-The exact current-build `MultiLaunchIndicator` model layout was audited, but V1.0P and V1.0Q conclusively showed that it is not the visual path for the dynamic icons seen on selected objects: all three slots published `HasAimTarget=false` and `ReticuleHidden=true` and the icons remained visible. V1.0Q also forced the native `InterfaceOptions.m_bTargetIndicatorEnabled` flag off, with no effect on those object icons.
+V1.0T proved that the engine-level approach used by **reg2k's NoHighlight v1.0** reaches the correct Launch highlight subsystem, but its broad conditional-branch skip suppresses both visible effects together.
 
-V1.0T supersedes the V1.0R/V1.0S selection-highlight event approach. The reference `NoHighlight.dll` supplied for comparison identifies itself as `NoHighlight v1.0 by reg2k`. Its Launch path scans the signature `83 7D 50 00 0F 85 ? ? ? ? ? ? ? 0F 84 ? ? ? ? 49 8B 85 ? ? ? ?`, applies an offset of +4, and changes the branch opcode bytes from `0F 85` to `90 E9`. The same signature is unique in the current Control executable. Control Dynamic HUD V1.0T reimplements that method with runtime signature validation, fail-open behavior, byte restoration for the global F1 Show HUD override, and no fixed executable address.
+V1.0U separates them at their native outputs:
+
+- `HideIcon` forces the unique `LaunchIndicator.m_bHighlightVisible` publication to false before the HUD model is notified. This targets the object-attached Launch / Multi Launch icon without intentionally disabling the world outline.
+- `HideOutline` suppresses only `HighlightComponentState.m_out_pRenderObject`, preventing the selected object's white render outline from being published while leaving the HUD icon path independent.
+
+For compatibility, old INI files containing `HideObjectIndicators` are still accepted as the default value for both new options when `HideIcon` / `HideOutline` are absent.
+
+The F1 Show HUD override restores both native publication paths. V1.0U additionally hooks the verified HighlightComponent refresh callback and, when a recently active component is available, re-runs it once after F1 restores the outline path so the white outline can be republished immediately instead of waiting for a target change.
 
 All timing values are in milliseconds.
 
@@ -198,9 +205,9 @@ The important current-build findings are:
 - V1.0D real-aim crosshair behavior validated;
 - Launch target reticle validated in V1.0L;
 - V1.0M post-update Multi Launch suppression and DOM center-dot search rejected;
-- validate V1.0T reg2k NoHighlight-style Launch branch suppression against Multi Launch object icons;
-- V1.0S/V1.0T center-pixel mask validated for the normal crosshair dot; keep this path frozen;
-- validate V1.0T New Game branch removal plus fixed-layout compaction;
+- validate V1.0U independent `HideIcon` / `HideOutline` paths and F1 republish behavior;
+- V1.0S+ center-pixel mask validated for the normal crosshair dot; keep this path frozen;
+- validate V1.0U pre-Coherent `OnNewGameClicked` binding suppression plus existing fallback cleanup;
 - validate the hardened Expedition forced-modifier behavior;
 - add configurable behavior for additional HUD elements where safe;
 - optional in-game configuration overlay later;
@@ -209,7 +216,7 @@ The important current-build findings are:
 ## Credits
 
 - Remedy Entertainment for Control.
-- **reg2k** for the Control Plugin Loader, DynaHUD, and **NoHighlight v1.0**. The V1.0T Launch/Multi Launch highlight suppression method is based on NoHighlight's signature-scanned branch-patch approach and was reimplemented for the current executable.
+- **reg2k** for the Control Plugin Loader, DynaHUD, and **NoHighlight v1.0**. NoHighlight exposed the correct engine-level Launch highlight path. V1.0T reproduced its broad signature-scanned branch method; V1.0U uses that finding to split the HUD icon and world-outline outputs into independent controls.
 - The original DynaHUD project for the dynamic-HUD concept that motivated this rewrite.
 
 This is an unofficial community project and is not affiliated with Remedy Entertainment.
