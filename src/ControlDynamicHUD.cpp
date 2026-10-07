@@ -181,8 +181,8 @@ static const char kMainMenuScript[] = R"JS(
 (function(){
  var CFG=window.__CDH_MAINMENU_CONFIG||{hideNewGame:0,hideMissionSelect:0};
  if(!CFG.hideNewGame&&!CFG.hideMissionSelect)return;
- if(window.__ControlDynamicHUDMainMenu&&window.__ControlDynamicHUDMainMenu.version==='1.0U')return;
- window.__ControlDynamicHUDMainMenu={version:'1.0U'};
+ if(window.__ControlDynamicHUDMainMenu&&window.__ControlDynamicHUDMainMenu.version==='1.0U1')return;
+ window.__ControlDynamicHUDMainMenu={version:'1.0U1'};
 
  var style=document.getElementById('cdh-mainmenu-style');
  if(!style){style=document.createElement('style');style.id='cdh-mainmenu-style';(document.head||document.documentElement).appendChild(style);}
@@ -428,7 +428,7 @@ static const char kSuiteScript[] = R"JS(
   expeditionEnabled:1,expeditionHideDelayMs:2000,expeditionFadeDurationMs:300
  };
  var CDH=window.__ControlDynamicHUDSuite={
-  version:'1.0U',health:false,mission:false,crosshair:false,expedition:false,
+  version:'1.0U1',health:false,mission:false,crosshair:false,expedition:false,
   hudVisible:true,active:true,lastError:'',forceVisible:false
  };
  var MODE={COMBAT:0,ADVENTURING:1,STORY:2,ACTION:3,EXAMINE:4,HIDDEN:5};
@@ -1886,15 +1886,6 @@ static void WINAPI HookUpdate(void* self){
     if(g_cfg.multiLaunchHideIcon)set_launch_icon_hidden(!forcedNow);
     if(g_cfg.multiLaunchHideOutline)set_launch_outline_hidden(!forcedNow);
 
-    if(forcedNow&&!g_forceHudWasActive&&g_cfg.multiLaunchHideOutline&&
-       g_originalHighlightRefresh&&g_lastHighlightState&&now>=g_lastHighlightStateMs&&
-       now-g_lastHighlightStateMs<2000){
-        // The old broad NoHighlight patch restored code but did not republish state.
-        // Re-run the recently active HighlightComponent callback once after restoring
-        // the outline publication path.
-        g_originalHighlightRefresh(g_lastHighlightState);
-        log_line("F1 Show HUD forced an immediate HighlightComponent outline republish.");
-    }
     g_forceHudWasActive=forcedNow;
     native_hide_launch_reticles(self,now);
 }
@@ -2086,7 +2077,7 @@ static bool install_hook(WinApi& api,uptr target){
     DWORD dummy=0;api.VirtualProtect((void*)target,stolen,old,&dummy);api.FlushInstructionCache((HANDLE)(uptr)-1,(void*)target,stolen);return true;
 }
 
-extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 120;}
+extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 121;}
 extern "C" __declspec(dllexport) void* CDH_RelocAnchor=(void*)&CDH_Version;
 
 extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
@@ -2098,7 +2089,7 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     load_config(api);g_showHudVk=parse_vk(g_cfg.showHudKey);build_config_script();
     g_WriteFile=api.WriteFile;g_log=api.CreateFileW(L"plugins\\ControlDynamicHUD.log",GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
     if(!g_log||(uptr)g_log==INVALID_HANDLE_VALUE_U)return 1;
-    log_line("Control Dynamic HUD V1.0U SPLIT HIGHLIGHT TEST");log_line("Mode: split Launch icon/outline suppression + validated center-dot mask + save-protection menu guards");
+    log_line("Control Dynamic HUD V1.0U1 CRASHFIX TEST");log_line("Mode: safe split icon/outline patches + validated center-dot mask + stable menu guards");
     log_cstr("Config: Enabled=");log_dec(g_cfg.enabled?1:0);log_cstr(" ShowHUDKey=");log_cstr(g_cfg.showHudKey);log_cstr(" VK=");log_hex(g_showHudVk);log_cstr(" ShowHUDDurationMs=");log_dec(g_cfg.showHudDurationMs);
     log_cstr(" HideNewGame=");log_dec(g_cfg.mainMenuHideNewGame?1:0);
     log_cstr(" HideMissionSelect=");log_dec(g_cfg.mainMenuHideMissionSelect?1:0);
@@ -2109,25 +2100,25 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     log_cstr("Executable: ");log_wide(first_module_name());log_bytes("\r\n",2);void* exe=first_module_base();log_cstr("Executable base: ");log_hex((uptr)exe);log_bytes("\r\n",2);
     patch_ground_slam_target_circle(exe);
     patch_main_menu_actions(exe);
-    if(g_cfg.mainMenuHideNewGame&&!patch_new_game_binding(exe))
-        log_line("New Game pre-Coherent binding suppression not installed; native action guard + DOM fallback remain active.");
+    if(g_cfg.mainMenuHideNewGame)
+        log_line("V1.0U1 crashfix: pre-Coherent New Game binding skip disabled; native action guard + DOM fallback only.");
     log_line("V1.0Q Target Indicator path rejected by in-game test; native option override disabled.");
     if(g_cfg.mainMenuHideMissionSelect&&!patch_mission_select_menu_model(exe))
         log_line("Mission Select MenuOptions suppression not installed; DOM fallback remains active.");
     if(g_cfg.mainMenuHideNewGame)
-        log_line("New Game has no MenuOptions visibility flag; V1.0U skips its exact Page::bind block before Coherent and keeps DOM cleanup as fallback.");
-    log_line("V1.0U splits the reg2k NoHighlight result into independent icon and outline native outputs.");
+        log_line("New Game has no MenuOptions visibility flag; V1.0U1 disables the experimental pre-Coherent binding skip after the Continue crash and keeps native action guard + DOM fallback.");
+    log_line("V1.0U1 crashfix keeps the split icon/outline instruction patches but removes both experimental control-flow detours from V1.0U.");
     if(g_cfg.multiLaunchHideIcon||g_cfg.multiLaunchHideOutline){
         if(locate_split_launch_highlights(exe)){
-            if(g_cfg.multiLaunchHideOutline&&!install_highlight_refresh_hook(api))
-                log_line("HighlightComponent refresh hook unavailable; F1 outline refresh may wait for the next game update.");
+            if(g_cfg.multiLaunchHideOutline)
+                log_line("V1.0U1 crashfix: HighlightComponent refresh detour disabled; outline restoration uses normal game refresh.");
             if(g_cfg.multiLaunchHideIcon)set_launch_icon_hidden(true);
             if(g_cfg.multiLaunchHideOutline)set_launch_outline_hidden(true);
         }else{
             log_line("Split Launch highlight signatures unavailable; affected feature fails open.");
         }
     }
-    log_line("CrosshairDot V1.0U keeps the validated V1.0S center mask unchanged.");
+    log_line("CrosshairDot V1.0U1 keeps the validated V1.0S center mask unchanged.");
     void* coh=find_module("coherentuigt.dll");g_coherentBase=coh;log_cstr("CoherentUIGT.dll: ");if(coh){log_hex((uptr)coh);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
     void* ui=find_module("ui_rmdwin10_f.dll");log_cstr("ui_rmdwin10_f.dll: ");if(ui){log_hex((uptr)ui);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
     const char* pageGetViewName="?getView@Page@ui@@QEAAPEAVView@UIGT@Coherent@@XZ";
