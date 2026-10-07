@@ -160,8 +160,8 @@ static const char kMainMenuScript[] = R"JS(
 (function(){
  var CFG=window.__CDH_MAINMENU_CONFIG||{hideNewGame:0,hideMissionSelect:0};
  if(!CFG.hideNewGame&&!CFG.hideMissionSelect)return;
- if(window.__ControlDynamicHUDMainMenu&&window.__ControlDynamicHUDMainMenu.version==='1.0R')return;
- window.__ControlDynamicHUDMainMenu={version:'1.0R'};
+ if(window.__ControlDynamicHUDMainMenu&&window.__ControlDynamicHUDMainMenu.version==='1.0S')return;
+ window.__ControlDynamicHUDMainMenu={version:'1.0S'};
 
  var style=document.getElementById('cdh-mainmenu-style');
  if(!style){style=document.createElement('style');style.id='cdh-mainmenu-style';(document.head||document.documentElement).appendChild(style);}
@@ -244,6 +244,21 @@ static const char kMainMenuScript[] = R"JS(
   }
   return best;
  }
+ function removeNewGameBranch(row){
+  if(!row||!row.parentNode)return;
+  var p=row.parentNode;
+  try{p.removeChild(row);}catch(x){return;}
+  for(var depth=0;depth<5&&p&&p!==document.body&&p!==document.documentElement;depth++){
+   var next=p.parentNode;
+   var txt=norm(p.textContent);
+   var interactive=0;
+   try{interactive=p.querySelectorAll('button,a,[role="button"],[tabindex]').length;}catch(x2){}
+   if(p.children.length===0||(txt===''&&interactive===0)){
+    try{if(next)next.removeChild(p);}catch(x3){}
+    p=next;
+   }else break;
+  }
+ }
  function hideTargets(){
   if(!document.body)return;
   var all=document.body.querySelectorAll('*');
@@ -254,6 +269,10 @@ static const char kMainMenuScript[] = R"JS(
    if(!kind)continue;
    var row=collapseRowFor(e,kind);
    if(!row||row===document.body||row===document.documentElement||!row.parentNode)continue;
+   if(kind==='new'){
+    removeNewGameBranch(row);
+    continue;
+   }
    row.setAttribute('data-cdh-mainmenu-hidden','1');
    row.setAttribute('data-cdh-mainmenu-kind',kind);
    row.setAttribute('aria-hidden','true');
@@ -354,7 +373,7 @@ static const char kSuiteScript[] = R"JS(
   expeditionEnabled:1,expeditionHideDelayMs:2000,expeditionFadeDurationMs:300
  };
  var CDH=window.__ControlDynamicHUDSuite={
-  version:'1.0R',health:false,mission:false,crosshair:false,expedition:false,
+  version:'1.0S',health:false,mission:false,crosshair:false,expedition:false,
   hudVisible:true,active:true,lastError:'',forceVisible:false
  };
  var MODE={COMBAT:0,ADVENTURING:1,STORY:2,ACTION:3,EXAMINE:4,HIDDEN:5};
@@ -380,7 +399,7 @@ static const char kSuiteScript[] = R"JS(
   +'.mission-log-wrapper.cdh-in-map{opacity:1!important;}'
   +'.awesome-crosshair{transition:opacity '+CFG.crosshairFadeDurationMs+'ms var(--easing);}'
   +'.awesome-crosshair[data-cdh-crosshair-hidden="1"]{opacity:0!important;}'
-  +'.awesome-crosshair[data-cdh-dot-hidden="1"]{background-image:none!important;background-color:transparent!important;box-shadow:none!important;}'
+  +'.awesome-crosshair[data-cdh-dot-hidden="1"]{background-image:none!important;background-color:transparent!important;box-shadow:none!important;-webkit-mask-image:radial-gradient(circle at 50% 50%,transparent 0,transparent 0.28vmin,#000 0.34vmin,#000 100%)!important;-webkit-mask-repeat:no-repeat!important;-webkit-mask-size:100% 100%!important;mask-image:radial-gradient(circle at 50% 50%,transparent 0,transparent 0.28vmin,#000 0.34vmin,#000 100%)!important;mask-repeat:no-repeat!important;mask-size:100% 100%!important;}'
   +'.awesome-crosshair[data-cdh-dot-hidden="1"]::before,.awesome-crosshair[data-cdh-dot-hidden="1"]::after{content:none!important;background:none!important;box-shadow:none!important;}'
   +'.awesome-crosshair[data-cdh-dot-hidden="1"] .awesome-crosshair__dot,.awesome-crosshair[data-cdh-dot-hidden="1"] .awesome-crosshair-dot,.awesome-crosshair[data-cdh-dot-hidden="1"] .crosshair-dot,.awesome-crosshair[data-cdh-dot-hidden="1"] [class*="crosshair"][class*="dot"],.awesome-crosshair[data-cdh-dot-hidden="1"] [class*="reticul"][class*="dot"]{opacity:0!important;visibility:hidden!important;}'
   +'[data-cdh-center-dot-hidden="1"]{display:none!important;opacity:0!important;visibility:hidden!important;}'
@@ -1183,26 +1202,58 @@ static const u8 kLaunchStartHighlightPat[] = {
 0x48,0x83,0xC4,0x20,0x5B,0x48,0xFF,0x25,0,0,0,0};
 static const char kLaunchStartHighlightMask[] = "xxxxxxx????xxxxxxxxxxxx????";
 
-static bool locate_launch_selection_highlights(void* exe){
-    uptr change[4]={0,0,0,0};
-    u32 nc=scan_masked_all(exe,kLaunchChangeHighlightPat,kLaunchChangeHighlightMask,
-                           sizeof(kLaunchChangeHighlightPat),change,4);
-    uptr start[2]={0,0};
-    u32 ns=scan_masked_all(exe,kLaunchStartHighlightPat,kLaunchStartHighlightMask,
-                           sizeof(kLaunchStartHighlightPat),start,2);
-    log_cstr("Launch change_selection_highlight dispatch matches: ");log_dec(nc);
-    if(nc) {log_cstr(" first=");log_hex(change[0]);}
-    log_bytes("\r\n",2);
-    log_cstr("Launch start_selection_highlight dispatch matches: ");log_dec(ns);
-    if(ns) {log_cstr(" first=");log_hex(start[0]);}
-    log_bytes("\r\n",2);
-    if(nc!=2||ns!=1)return false;
+static bool cstr_eq_exact(const char* a,const char* b){
+    if(!a||!b)return false;
+    usize i=0;
+    for(;;++i){
+        char ca=a[i],cb=b[i];
+        if(ca!=cb)return false;
+        if(!ca)return true;
+        if(i>160)return false;
+    }
+}
 
+static bool locate_launch_selection_highlights(void* exe){
+    static const char kChangeEvent[]="global_events\\launch_change_selection_highlight";
+    static const char kStartEvent[]="global_events\\launch_start_selection_highlight";
+
+    uptr rawChange[8]={0,0,0,0,0,0,0,0};
+    u32 rawNc=scan_masked_all(exe,kLaunchChangeHighlightPat,kLaunchChangeHighlightMask,
+                              sizeof(kLaunchChangeHighlightPat),rawChange,8);
+    uptr change[2]={0,0};u32 nc=0;
+    for(u32 i=0;i<rawNc&&i<8;++i){
+        uptr p=rawChange[i];
+        s32 rel=*(s32*)(p+7);
+        const char* eventName=(const char*)(p+11+(s64)rel);
+        if(cstr_eq_exact(eventName,kChangeEvent)&&nc<2)change[nc++]=p;
+    }
+
+    uptr rawStart[4]={0,0,0,0};
+    u32 rawNs=scan_masked_all(exe,kLaunchStartHighlightPat,kLaunchStartHighlightMask,
+                              sizeof(kLaunchStartHighlightPat),rawStart,4);
+    uptr start=0;u32 ns=0;
+    for(u32 i=0;i<rawNs&&i<4;++i){
+        uptr p=rawStart[i];
+        s32 rel=*(s32*)(p+7);
+        const char* eventName=(const char*)(p+11+(s64)rel);
+        if(cstr_eq_exact(eventName,kStartEvent)){start=p;++ns;}
+    }
+
+    log_cstr("Launch change dispatch pattern raw=");log_dec(rawNc);
+    log_cstr(" exact-event=");log_dec(nc);
+    if(nc){log_cstr(" first=");log_hex(change[0]);}
+    log_bytes("\r\n",2);
+    log_cstr("Launch start/stop dispatch pattern raw=");log_dec(rawNs);
+    log_cstr(" exact-start=");log_dec(ns);
+    if(start){log_cstr(" start=");log_hex(start);}
+    log_bytes("\r\n",2);
+
+    if(nc!=2||ns!=1||!start)return false;
     for(int i=0;i<2;++i){
         g_launchChangeDispatch[i]=(u8*)(change[i]+15);
         for(int j=0;j<6;++j)g_launchChangeOriginal[i][j]=g_launchChangeDispatch[i][j];
     }
-    g_launchStartTail=(u8*)(start[0]+20);
+    g_launchStartTail=(u8*)(start+20);
     for(int j=0;j<7;++j)g_launchStartOriginal[j]=g_launchStartTail[j];
     return true;
 }
@@ -1455,7 +1506,7 @@ static bool install_multilaunch_update_hook(WinApi& api,void* exe){
     if(n!=1||!p||!locate_launch_selection_highlights(exe))return false;
     if(!install_code_detour(api,p,(void*)&HookMultiLaunchUpdate,(void**)&g_originalMultiLaunchUpdate,20))return false;
     if(g_cfg.multiLaunchHideDelayMs==0)set_launch_selection_highlight_suppressed(true);
-    log_line("Multi Launch updater hook installed; Launch selection-highlight event suppression armed.");
+    log_line("Multi Launch updater hook installed; exact Launch selection-highlight dispatch suppression armed.");
     return true;
 }
 
@@ -1770,7 +1821,7 @@ static bool install_hook(WinApi& api,uptr target){
     DWORD dummy=0;api.VirtualProtect((void*)target,stolen,old,&dummy);api.FlushInstructionCache((HANDLE)(uptr)-1,(void*)target,stolen);return true;
 }
 
-extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 117;}
+extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 118;}
 extern "C" __declspec(dllexport) void* CDH_RelocAnchor=(void*)&CDH_Version;
 
 extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
@@ -1782,7 +1833,7 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     load_config(api);g_showHudVk=parse_vk(g_cfg.showHudKey);build_config_script();
     g_WriteFile=api.WriteFile;g_log=api.CreateFileW(L"plugins\\ControlDynamicHUD.log",GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
     if(!g_log||(uptr)g_log==INVALID_HANDLE_VALUE_U)return 1;
-    log_line("Control Dynamic HUD V1.0R SELECTION HIGHLIGHT TEST");log_line("Mode: Launch selection-highlight suppression + collapsed main-menu rows + cumulative HUD");
+    log_line("Control Dynamic HUD V1.0S EXACT EVENT + DOT MASK TEST");log_line("Mode: exact Launch selection events + center-pixel mask + New Game branch pruning");
     log_cstr("Config: Enabled=");log_dec(g_cfg.enabled?1:0);log_cstr(" ShowHUDKey=");log_cstr(g_cfg.showHudKey);log_cstr(" VK=");log_hex(g_showHudVk);log_cstr(" ShowHUDDurationMs=");log_dec(g_cfg.showHudDurationMs);
     log_cstr(" HideNewGame=");log_dec(g_cfg.mainMenuHideNewGame?1:0);
     log_cstr(" HideMissionSelect=");log_dec(g_cfg.mainMenuHideMissionSelect?1:0);
@@ -1794,9 +1845,11 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     log_line("V1.0Q Target Indicator path rejected by in-game test; native option override disabled.");
     if(g_cfg.mainMenuHideMissionSelect&&!patch_mission_select_menu_model(exe))
         log_line("Mission Select MenuOptions suppression not installed; DOM fallback remains active.");
+    if(g_cfg.mainMenuHideNewGame)
+        log_line("New Game has no MenuOptions visibility flag; V1.0S will prune its complete Coherent branch.");
     if(!install_multilaunch_update_hook(api,exe))
         log_line("Multi Launch pre-notification hook not installed; feature fails open.");
-    log_line("CrosshairDot V1.0R hides every small square center candidate instead of stopping after the first Launch/ability dot; min-reticle override remains disabled.");
+    log_line("CrosshairDot V1.0S adds a resolution-scaled transparent center mask to the entire crosshair component, independent of DOM child structure.");
     void* coh=find_module("coherentuigt.dll");g_coherentBase=coh;log_cstr("CoherentUIGT.dll: ");if(coh){log_hex((uptr)coh);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
     void* ui=find_module("ui_rmdwin10_f.dll");log_cstr("ui_rmdwin10_f.dll: ");if(ui){log_hex((uptr)ui);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
     const char* pageGetViewName="?getView@Page@ui@@QEAAPEAVView@UIGT@Coherent@@XZ";
