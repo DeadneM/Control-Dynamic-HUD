@@ -1253,6 +1253,58 @@ static u32 scan_masked_all(void* exe,const u8* pat,const char* mask,usize plen,u
     return count;
 }
 
+// Main-menu save protection: identify the exact Page::bind block for
+// "OnNewGameClicked" and skip only that binding before Coherent sees it.
+// The native action guard remains as a second safety layer.
+static const u8 kMenuBindBlockPat[] = {
+0x48,0x8D,0x05,0,0,0,0,0x48,0x89,0x45,0xA7,0x89,0x5D,0xAF,
+0x48,0x8D,0x45,0xF7,0x48,0x89,0x45,0xD7,0x48,0x8D,0x45,0xF7,
+0x48,0x89,0x45,0xDF,0xC7,0x45,0xE7,0x40,0x00,0x00,0x00,
+0x48,0xC7,0x45,0xEB,0x40,0x00,0x00,0x00,0xC6,0x45,0xF7,0x00,
+0x48,0x8D,0x15,0,0,0,0};
+static const char kMenuBindBlockMask[] =
+"xxx????xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx????";
+
+static bool small_cstr_eq(const char* a,const char* b){
+    if(!a||!b)return false;
+    for(usize i=0;i<96;++i){
+        if(a[i]!=b[i])return false;
+        if(!a[i])return true;
+    }
+    return false;
+}
+
+static bool patch_new_game_binding(void* exe){
+    if(!g_cfg.mainMenuHideNewGame)return true;
+    uptr hits[32]={0};u32 n=scan_masked_all(exe,kMenuBindBlockPat,kMenuBindBlockMask,
+                                           sizeof(kMenuBindBlockPat),hits,32);
+    uptr block=0;u32 exact=0;
+    for(u32 i=0;i<n&&i<32;++i){
+        uptr p=hits[i];
+        s32 rel=*(s32*)(p+52);
+        const char* name=(const char*)(p+56+(s64)rel);
+        if(small_cstr_eq(name,"OnNewGameClicked")){block=p;++exact;}
+    }
+    log_cstr("New Game Page::bind block candidates: ");log_dec(n);
+    log_cstr(" exact OnNewGameClicked=");log_dec(exact);
+    if(block){log_cstr(" block=");log_hex(block);}log_bytes("\r\n",2);
+    if(exact!=1||!block)return false;
+
+    // The next verified bind block begins 0x93 bytes later in this audited build.
+    uptr next=block+0x93;
+    if(*(u8*)next!=0x48||*((u8*)next+1)!=0x8D||*((u8*)next+2)!=0x05){
+        log_line("New Game binding skip rejected: next binding block verification failed.");
+        return false;
+    }
+    DWORD old=0;if(!g_VirtualProtect((void*)block,5,PAGE_EXECUTE_READWRITE,&old))return false;
+    s32 disp=(s32)(next-(block+5));
+    *(u8*)block=0xE9;*(s32*)(block+1)=disp;
+    DWORD dummy=0;g_VirtualProtect((void*)block,5,old,&dummy);
+    if(g_FlushInstructionCache)g_FlushInstructionCache((HANDLE)(uptr)-1,(void*)block,5);
+    log_line("New Game OnNewGameClicked Page::bind block skipped before Coherent binding.");
+    return true;
+}
+
 // V1.0U: split the broad NoHighlight result into the two native outputs it was skipping.
 // Icon path: LaunchIndicator.m_bHighlightVisible at model offset +0x60.
 // Vanilla B1 01 = mov cl,1. Patch 32 C9 = xor cl,cl.
@@ -2057,11 +2109,13 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     log_cstr("Executable: ");log_wide(first_module_name());log_bytes("\r\n",2);void* exe=first_module_base();log_cstr("Executable base: ");log_hex((uptr)exe);log_bytes("\r\n",2);
     patch_ground_slam_target_circle(exe);
     patch_main_menu_actions(exe);
+    if(g_cfg.mainMenuHideNewGame&&!patch_new_game_binding(exe))
+        log_line("New Game pre-Coherent binding suppression not installed; native action guard + DOM fallback remain active.");
     log_line("V1.0Q Target Indicator path rejected by in-game test; native option override disabled.");
     if(g_cfg.mainMenuHideMissionSelect&&!patch_mission_select_menu_model(exe))
         log_line("Mission Select MenuOptions suppression not installed; DOM fallback remains active.");
     if(g_cfg.mainMenuHideNewGame)
-        log_line("New Game has no MenuOptions visibility flag; V1.0T prunes and compacts its Coherent branch.");
+        log_line("New Game has no MenuOptions visibility flag; V1.0U skips its exact Page::bind block before Coherent and keeps DOM cleanup as fallback.");
     log_line("V1.0U splits the reg2k NoHighlight result into independent icon and outline native outputs.");
     if(g_cfg.multiLaunchHideIcon||g_cfg.multiLaunchHideOutline){
         if(locate_split_launch_highlights(exe)){
