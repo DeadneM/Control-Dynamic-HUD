@@ -15,11 +15,11 @@ V0.9 fixed the core lifecycle problems:
 - persistent slot-28 lifecycle hook survives pause/menu page recreation;
 - no legacy per-frame reinjection storm.
 
-### V1.0S exact-event + center-mask test candidate
+### V1.0T reg2k NoHighlight-method test candidate
 
-Branch: `test/v1.0s-exact-event-dotmask`
+Branch: `test/v1.0t-reg2k-nohighlight`
 
-V1.0S keeps the cumulative HUD feature set and fixes two concrete V1.0R failures. The Launch selection-highlight byte pattern had seven matches in the current executable, but only two resolve to `global_events\\launch_change_selection_highlight`, one resolves to `global_events\\launch_start_selection_highlight`, and one resolves to the stop event; V1.0S filters candidates by the exact RIP-relative event string before patching. New Game is treated as the only remaining static main-menu entry and its Coherent branch is physically removed together with empty wrapper nodes. Center-dot handling adds a resolution-scaled transparent mask at the exact crosshair center so the dot can be suppressed even when it is baked into a larger image/canvas element.
+V1.0T keeps the validated V1.0S center-dot mask unchanged. For Launch/Multi Launch object highlighting it abandons the unsuccessful model/event experiments and adopts the low-level method used by reg2k's NoHighlight v1.0: a unique Launch code signature is scanned at runtime and the conditional branch at signature +4 is changed from `0F 85` to `90 E9`, forcing the game's own skip path while preserving the original relative displacement. F1 temporarily restores the original bytes and the patch is re-applied when the Show HUD override expires. New Game remains the only unresolved main-menu entry; V1.0T additionally compacts lower menu siblings when the removed branch came from a fixed/absolute layout.
 
 Currently configurable:
 
@@ -169,7 +169,7 @@ HideDelayMs=0
 
 The exact current-build `MultiLaunchIndicator` model layout was audited, but V1.0P and V1.0Q conclusively showed that it is not the visual path for the dynamic icons seen on selected objects: all three slots published `HasAimTarget=false` and `ReticuleHidden=true` and the icons remained visible. V1.0Q also forced the native `InterfaceOptions.m_bTargetIndicatorEnabled` flag off, with no effect on those object icons.
 
-V1.0S targets the native selection-highlight event pipeline, but unlike V1.0R it validates each byte-pattern hit by resolving the RIP-relative event string. In the current executable the broad pattern produces five `change`-shaped matches and two `start/stop`-shaped matches; only two are truly `global_events\\launch_change_selection_highlight`, one is `global_events\\launch_start_selection_highlight`, and one is `global_events\\launch_stop_selection_highlight`. The unrelated `OnShapeDestroy` / waypoint callbacks are ignored. When the Multi Launch hide rule is active, V1.0S suppresses only the exact start/change dispatches and deliberately leaves the stop event intact so cleanup still works. F1 temporarily restores the vanilla dispatches.
+V1.0T supersedes the V1.0R/V1.0S selection-highlight event approach. The reference `NoHighlight.dll` supplied for comparison identifies itself as `NoHighlight v1.0 by reg2k`. Its Launch path scans the signature `83 7D 50 00 0F 85 ? ? ? ? ? ? ? 0F 84 ? ? ? ? 49 8B 85 ? ? ? ?`, applies an offset of +4, and changes the branch opcode bytes from `0F 85` to `90 E9`. The same signature is unique in the current Control executable. Control Dynamic HUD V1.0T reimplements that method with runtime signature validation, fail-open behavior, byte restoration for the global F1 Show HUD override, and no fixed executable address.
 
 All timing values are in milliseconds.
 
@@ -194,9 +194,9 @@ The important current-build findings are:
 - V1.0D real-aim crosshair behavior validated;
 - Launch target reticle validated in V1.0L;
 - V1.0M post-update Multi Launch suppression and DOM center-dot search rejected;
-- validate V1.0S exact-event Launch selection-highlight suppression against Multi Launch object icons;
-- validate V1.0S center-pixel mask against the normal crosshair dot while preserving the crosshair arms;
-- validate V1.0S New Game branch removal and confirm the final menu slot is gone;
+- validate V1.0T reg2k NoHighlight-style Launch branch suppression against Multi Launch object icons;
+- V1.0S/V1.0T center-pixel mask validated for the normal crosshair dot; keep this path frozen;
+- validate V1.0T New Game branch removal plus fixed-layout compaction;
 - validate the hardened Expedition forced-modifier behavior;
 - add configurable behavior for additional HUD elements where safe;
 - optional in-game configuration overlay later;
@@ -205,7 +205,7 @@ The important current-build findings are:
 ## Credits
 
 - Remedy Entertainment for Control.
-- reg2k for the Control Plugin Loader and prior Control modding research.
+- **reg2k** for the Control Plugin Loader, DynaHUD, and **NoHighlight v1.0**. The V1.0T Launch/Multi Launch highlight suppression method is based on NoHighlight's signature-scanned branch-patch approach and was reimplemented for the current executable.
 - The original DynaHUD project for the dynamic-HUD concept that motivated this rewrite.
 
 This is an unofficial community project and is not affiliated with Remedy Entertainment.
