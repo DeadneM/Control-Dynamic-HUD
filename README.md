@@ -15,11 +15,11 @@ V0.9 fixed the core lifecycle problems:
 - persistent slot-28 lifecycle hook survives pause/menu page recreation;
 - no legacy per-frame reinjection storm.
 
-### V1.0N configurable test branch
+### V1.0O menu + center-dot test candidate
 
-Branch: `dev/v1.0-configurable-hud`
+Branch: `test/v1.0o-menu-dot`
 
-V1.0N adds configuration through `plugins/ControlDynamicHUD.ini`.
+V1.0O keeps the cumulative V1.0N feature set and replaces two rejected/fragile paths: the center dot no longer abuses `m_fMinReticuleSize`, and main-menu cleanup now identifies rows through native action/model state plus UI action attributes and localized text.
 
 Currently configurable:
 
@@ -121,7 +121,7 @@ Enabled=1
 HideDelayMs=0
 ```
 
-V1.0M's DOM-based center-dot search was rejected. V1.0N hooks the native CrosshairData updater instead and temporarily forces the source minimum-reticle size to 0 before the model notification is sent. The default `HideDelayMs=0` requests an always-hidden center dot except during the global Show HUD override. This native mapping is still a test candidate until validated in game.
+V1.0N's native `CrosshairData + 0xAC` experiment was rejected after the field was confirmed to be `m_fMinReticuleSize`, part of reticle sizing/scatter rather than an independent center-dot visibility switch. V1.0O disables that native override and targets the center dot independently in the Coherent HUD: semantic dot selectors are tried first, followed by a centered small-element geometry fallback and a pseudo-element fallback. The default `HideDelayMs=0` requests an always-hidden center dot, while the global Show HUD hotkey temporarily restores it.
 
 ### Expedition forced-modifier panel
 
@@ -157,7 +157,7 @@ HideNewGame=0
 HideMissionSelect=0
 ```
 
-Both options are **off by default**. Native action guards still make `New Game` and `Mission Select` no-ops when their corresponding option is enabled. V1.0N additionally forces `MenuOptions.m_bHasMissionSaves=false`, so Mission Select is removed from the native menu model rather than merely hidden from the DOM. New Game has no equivalent visibility boolean in the audited MenuOptions model, so V1.0N keeps the visual removal and adds an experimental navigation-skip guard for the hidden row.
+In this V1.0O test package both options are enabled so the two paths can be validated immediately. Native action guards still make `New Game` and `Mission Select` no-ops. `Mission Select` also keeps the V1.0N native `MenuOptions.m_bHasMissionSaves=false` suppression. The audited model has no equivalent `ShowNewGame` boolean, so V1.0O strengthens the UI-side removal for `New Game` by matching action/binding attributes as well as localized text, hiding the complete interactive row and skipping it during keyboard navigation.
 
 ### Multi Launch object-attached indicators
 
@@ -195,8 +195,8 @@ The important current-build findings are:
 - Launch target reticle validated in V1.0L;
 - V1.0M post-update Multi Launch suppression and DOM center-dot search rejected;
 - validate V1.0N pre-notification Multi Launch suppression;
-- validate V1.0N native CrosshairData center-dot suppression;
-- validate V1.0N native Mission Select removal and experimental New Game navigation skip;
+- validate V1.0O independent Coherent center-dot suppression;
+- validate V1.0O main-menu cleanup: native Mission Select model suppression plus robust New Game row removal/navigation skip;
 - validate the hardened Expedition forced-modifier behavior;
 - add configurable behavior for additional HUD elements where safe;
 - optional in-game configuration overlay later;
