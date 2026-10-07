@@ -15,11 +15,11 @@ V0.9 fixed the core lifecycle problems:
 - persistent slot-28 lifecycle hook survives pause/menu page recreation;
 - no legacy per-frame reinjection storm.
 
-### V1.0P hard-suppression test candidate
+### V1.0R selection-highlight + stacked-dot test candidate
 
-Branch: `test/v1.0p-hard-suppress`
+Branch: `test/v1.0r-selection-highlight`
 
-V1.0P keeps the cumulative V1.0O feature set and hardens the three still-unresolved paths from in-game testing: the remaining main-menu ghost row is physically removed from the DOM, center-dot discovery now searches the global screen center including unnamed SVG/pseudo primitives, and Multi Launch suppression now changes both `HasAimTarget` and `ReticuleHidden` inside the updater before Coherent notification.
+V1.0R keeps the cumulative HUD feature set but changes the three paths still under test after the V1.0Q in-game results. Main-menu rows are collapsed together with their wrapper geometry instead of leaving a reserved blank slot. Multi Launch no longer relies on `MultiLaunchIndicator` fields or `InterfaceOptions.m_bTargetIndicatorEnabled`; V1.0R suppresses the native `launch_start_selection_highlight` and `launch_change_selection_highlight` event dispatches while leaving the stop event intact for cleanup. Center-dot handling now marks every small square candidate stacked at the crosshair center instead of stopping after the first candidate.
 
 Currently configurable:
 
@@ -121,7 +121,7 @@ Enabled=1
 HideDelayMs=0
 ```
 
-V1.0N's native `CrosshairData + 0xAC` experiment was rejected after the field was confirmed to be `m_fMinReticuleSize`, part of reticle sizing/scatter rather than an independent center-dot visibility switch. V1.0O's HUD-local search did not hide the visible dot in game. V1.0P therefore searches semantic dot selectors, small centered descendants, `document.elementsFromPoint()` at the screen center, centered SVG primitives and pseudo-elements. The default `HideDelayMs=0` requests an always-hidden center dot, while the global Show HUD hotkey temporarily restores it.
+V1.0N's native `CrosshairData + 0xAC` experiment was rejected after the field was confirmed to be `m_fMinReticuleSize`, part of reticle sizing/scatter rather than an independent center-dot visibility switch. V1.0Q proved that the first center candidate found by the Coherent search belonged to the Launch/Multi Launch ability presentation: that dot disappeared, while the normal center crosshair dot remained. V1.0R therefore collects all small, roughly square elements stacked at the center, including semantic elements, SVG primitives and pseudo-elements, while rejecting elongated shapes so the crosshair arms are not intentionally targeted. The default `HideDelayMs=0` requests immediate suppression; F1 temporarily restores the marks.
 
 ### Expedition forced-modifier panel
 
@@ -157,7 +157,7 @@ HideNewGame=0
 HideMissionSelect=0
 ```
 
-**Release rule:** `HideNewGame=0` and `HideMissionSelect=0` are the public release defaults. This V1.0P test package temporarily uses `1/1` only so both paths can be validated immediately. Native action guards still make `New Game` and `Mission Select` no-ops while enabled. `Mission Select` also keeps the native `MenuOptions.m_bHasMissionSaves=false` suppression. V1.0O reduced the menu from two ghost positions to one; V1.0P physically removes the matched UI row instead of only hiding it, targeting that final ghost position.
+**Release rule:** `HideNewGame=0` and `HideMissionSelect=0` are the public release defaults. This V1.0R test package temporarily uses `1/1` only for validation. Native action guards still make `New Game` and `Mission Select` no-ops while enabled, and Mission Select keeps the native `MenuOptions.m_bHasMissionSaves=false` suppression. V1.0Q hid the remaining entry but left a blank reserved slot. V1.0R identifies the complete row wrapper and collapses its display, height, margins and padding so the menu layout can close the gap.
 
 ### Multi Launch object-attached indicators
 
@@ -167,9 +167,9 @@ HideObjectIndicators=1
 HideDelayMs=0
 ```
 
-The exact current-build model layout is audited from the registration functions themselves. The Launch block is at HUD+0x168. The three object-attached MultiLaunchIndicator objects are at +0x88/+0x120/+0x1B8; within each, m_bHasAimTarget is +0x40, m_bIsReticuleHidden is +0x41, and m_iValue is +0x44.
+The exact current-build `MultiLaunchIndicator` model layout was audited, but V1.0P and V1.0Q conclusively showed that it is not the visual path for the dynamic icons seen on selected objects: all three slots published `HasAimTarget=false` and `ReticuleHidden=true` and the icons remained visible. V1.0Q also forced the native `InterfaceOptions.m_bTargetIndicatorEnabled` flag off, with no effect on those object icons.
 
-V1.0L and V1.0M proved that writing these fields after the HUD update is too late. V1.0N moved `ReticuleHidden` suppression before notification but still did not hide the visible indicators in game. V1.0P patches the updater's own state generation so a suppressed slot publishes both `HasAimTarget=false` and `ReticuleHidden=true` before Coherent notification. With `HideDelayMs=0`, suppression is unconditional outside the F1 Show HUD override. The log records the post-update values for each slot, which lets the next test distinguish a bad field mapping from a different visual model.
+V1.0R instead targets the native selection-highlight event pipeline discovered in the executable. The game emits `launch_start_selection_highlight`, two `launch_change_selection_highlight` paths and `launch_stop_selection_highlight`. When the Multi Launch hide rule is active, V1.0R suppresses only the start/change event dispatches and deliberately leaves the stop event intact so an existing highlight can still be cleaned up. F1 temporarily restores the vanilla event dispatches.
 
 All timing values are in milliseconds.
 
@@ -194,9 +194,9 @@ The important current-build findings are:
 - V1.0D real-aim crosshair behavior validated;
 - Launch target reticle validated in V1.0L;
 - V1.0M post-update Multi Launch suppression and DOM center-dot search rejected;
-- validate V1.0P dual pre-notification Multi Launch suppression;
-- validate V1.0P global center-dot suppression;
-- validate V1.0P physical main-menu row removal and confirm the last ghost slot is gone;
+- validate V1.0R Launch selection-highlight event suppression against Multi Launch object icons;
+- validate V1.0R stacked center-dot candidate suppression while preserving the crosshair arms;
+- validate V1.0R collapsed main-menu wrapper and confirm the blank slot is gone;
 - validate the hardened Expedition forced-modifier behavior;
 - add configurable behavior for additional HUD elements where safe;
 - optional in-game configuration overlay later;
