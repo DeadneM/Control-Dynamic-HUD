@@ -569,11 +569,12 @@ static const char kSuiteScript[] = R"JS(
   return true;
  }
  function collectCenterDots(root){
-  var out=[],seen=[];
+  var out=[];
   function add(e,pseudo){
    if(!e||e===root&&pseudo==='')return;
-   for(var k=0;k<seen.length;k++)if(seen[k]===e+'|'+pseudo)return;
-   seen.push(e+'|'+pseudo);out.push({el:e,pseudo:pseudo||''});
+   pseudo=pseudo||'';
+   for(var k=0;k<out.length;k++)if(out[k].el===e&&out[k].pseudo===pseudo)return;
+   out.push({el:e,pseudo:pseudo});
   }
   var rr=root.getBoundingClientRect(),cx=window.innerWidth*0.5,cy=window.innerHeight*0.5;
   if(rr&&rr.width>2&&rr.height>2){cx=rr.left+rr.width*0.5;cy=rr.top+rr.height*0.5;}
