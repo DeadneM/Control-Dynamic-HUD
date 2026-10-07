@@ -147,50 +147,78 @@ static constexpr uptr kViewPageOffset = 0xA8;
 
 static const char kMainMenuScript[] = R"JS(
 (function(){
- if(window.__ControlDynamicHUDMainMenu)return;
  var CFG=window.__CDH_MAINMENU_CONFIG||{hideNewGame:0,hideMissionSelect:0};
  if(!CFG.hideNewGame&&!CFG.hideMissionSelect)return;
- window.__ControlDynamicHUDMainMenu={version:'1.0N'};
+ if(window.__ControlDynamicHUDMainMenu&&window.__ControlDynamicHUDMainMenu.version==='1.0O')return;
+ window.__ControlDynamicHUDMainMenu={version:'1.0O'};
 
- var style=document.createElement('style');
- style.id='cdh-mainmenu-style';
+ var style=document.getElementById('cdh-mainmenu-style');
+ if(!style){style=document.createElement('style');style.id='cdh-mainmenu-style';(document.head||document.documentElement).appendChild(style);}
  style.textContent='[data-cdh-mainmenu-hidden="1"]{display:none!important;visibility:hidden!important;opacity:0!important;pointer-events:none!important;}';
- (document.head||document.documentElement).appendChild(style);
 
  function norm(s){
   return String(s||'').toLowerCase()
    .replace(/[éèêë]/g,'e').replace(/[àâä]/g,'a')
    .replace(/[îï]/g,'i').replace(/[ôö]/g,'o')
    .replace(/[ùûü]/g,'u').replace(/ç/g,'c')
-   .replace(/\s+/g,' ').trim();
+   .replace(/[_-]+/g,' ').replace(/\s+/g,' ').trim();
  }
- function targetKind(t){
-  if(CFG.hideNewGame&&(t==='new game'||t==='nouvelle partie'))return 'new';
-  // Mission Select should normally be absent from the native MenuOptions model in V1.0N.
-  if(CFG.hideMissionSelect&&(t==='mission select'||t==='select mission'||t==='mission selection'||t==='selection de mission'))return 'mission';
+ function sigFor(e){
+  if(!e)return '';
+  var out=' '+norm(e.textContent)+' ';
+  var names=['id','class','role','aria-label','title','data-bind','data-action','data-event','data-command','onclick'];
+  for(var i=0;i<names.length;i++){try{out+=' '+norm(e.getAttribute&&e.getAttribute(names[i]));}catch(x){}}
+  return out;
+ }
+ function targetKind(e){
+  var s=sigFor(e);
+  if(CFG.hideNewGame){
+   if(s.indexOf('onnewgameclicked')>=0||s.indexOf('newgame')>=0||
+      s.indexOf(' new game ')>=0||s.indexOf(' nouvelle partie ')>=0||
+      s.indexOf(' neues spiel ')>=0||s.indexOf(' nuova partita ')>=0||
+      s.indexOf(' nueva partida ')>=0||s.indexOf(' novo jogo ')>=0||
+      s.indexOf(' nowa gra ')>=0||s.indexOf(' новая игра ')>=0)return 'new';
+  }
+  if(CFG.hideMissionSelect){
+   if(s.indexOf('onmissionselected')>=0||s.indexOf('missionselect')>=0||
+      s.indexOf(' mission select ')>=0||s.indexOf(' select mission ')>=0||
+      s.indexOf(' mission selection ')>=0||s.indexOf(' selection de mission ')>=0||
+      s.indexOf(' missionsauswahl ')>=0||s.indexOf(' selezione missione ')>=0||
+      s.indexOf(' seleccion de mision ')>=0||s.indexOf(' selecao de missao ')>=0)return 'mission';
+  }
   return '';
  }
- function rowFor(e,t){
-  var n=e;
-  for(var i=0;i<8&&n&&n.parentElement;i++){
-   var p=n.parentElement,pt=norm(p.textContent);
-   if(pt===t){n=p;continue;}
-   if(p.children&&p.children.length>1)return n;
-   break;
-  }
+ function interactiveScore(e){
+  if(!e)return 0;
+  var tag=String(e.tagName||'').toLowerCase(),s=sigFor(e),n=0;
+  if(tag==='button'||tag==='a'||tag==='li')n+=8;
+  if(s.indexOf(' button ')>=0||s.indexOf(' menu ')>=0||s.indexOf(' option ')>=0||
+     s.indexOf(' item ')>=0||s.indexOf(' entry ')>=0)n+=5;
+  if(e.getAttribute&&e.getAttribute('role')==='button')n+=8;
+  if(e.getAttribute&&e.getAttribute('tabindex')!==null)n+=3;
+  if(s.indexOf('onclick')>=0||s.indexOf('data bind')>=0)n+=2;
   return n;
+ }
+ function rowFor(e,kind){
+  var best=e,bestScore=interactiveScore(e),n=e;
+  for(var i=0;i<8&&n&&n.parentElement;i++){
+   var p=n.parentElement,ps=interactiveScore(p);
+   if(targetKind(p)===kind&&ps>=bestScore){best=p;bestScore=ps;}
+   else if(ps>bestScore&&ps>=5){best=p;bestScore=ps;}
+   n=p;
+  }
+  return best;
  }
  function hideTargets(){
   if(!document.body)return;
   var all=document.body.querySelectorAll('*');
   for(var i=0;i<all.length;i++){
-   var e=all[i];
-   if(e.children&&e.children.length>10)continue;
-   var t=norm(e.textContent),kind=targetKind(t);
+   var e=all[i],kind=targetKind(e);
    if(!kind)continue;
-   var row=rowFor(e,t);
+   var row=rowFor(e,kind);
    if(!row)continue;
    row.setAttribute('data-cdh-mainmenu-hidden','1');
+   row.setAttribute('data-cdh-mainmenu-kind',kind);
    row.setAttribute('aria-hidden','true');
    row.setAttribute('aria-disabled','true');
    row.setAttribute('tabindex','-1');
@@ -201,15 +229,13 @@ static const char kMainMenuScript[] = R"JS(
   var a=document.activeElement;
   if(a&&(a===row||(row.contains&&row.contains(a))))return true;
   var nodes=[row],q=row.querySelectorAll?row.querySelectorAll('*'):[];
-  for(var i=0;i<q.length&&i<24;i++)nodes.push(q[i]);
+  for(var i=0;i<q.length&&i<32;i++)nodes.push(q[i]);
   for(var j=0;j<nodes.length;j++){
-   var e=nodes[j];
-   var sig=(String(e.className||'')+' '
-    +String(e.getAttribute&&e.getAttribute('aria-selected')||'')+' '
-    +String(e.getAttribute&&e.getAttribute('data-selected')||'')+' '
-    +String(e.getAttribute&&e.getAttribute('data-active')||'')+' '
-    +String(e.getAttribute&&e.getAttribute('data-focused')||'')).toLowerCase();
-   if(/selected|highlight|focused|current|\bactive\b|\btrue\b/.test(sig))return true;
+   var e=nodes[j],sg=sigFor(e)+' '+norm(e.getAttribute&&e.getAttribute('aria-selected'))+
+    ' '+norm(e.getAttribute&&e.getAttribute('data-selected'))+
+    ' '+norm(e.getAttribute&&e.getAttribute('data-active'))+
+    ' '+norm(e.getAttribute&&e.getAttribute('data-focused'));
+   if(/selected|highlight|focused|current| active | true /.test(sg))return true;
   }
   return false;
  }
@@ -239,11 +265,7 @@ static const char kMainMenuScript[] = R"JS(
   sendNav(lastDir);
   setTimeout(function(){if(hiddenSelected())sendNav(lastDir);},0);
  }
- function queueSkip(){
-  if(skipQueued)return;
-  skipQueued=true;
-  setTimeout(skipIfNeeded,0);
- }
+ function queueSkip(){if(skipQueued)return;skipQueued=true;setTimeout(skipIfNeeded,0);}
  document.addEventListener('keydown',function(e){
   if(synthetic)return;
   var k=String(e.key||'').toLowerCase(),c=e.keyCode||e.which||0;
@@ -252,19 +274,13 @@ static const char kMainMenuScript[] = R"JS(
  },true);
 
  hideTargets();
- setTimeout(hideTargets,100);setTimeout(hideTargets,500);setTimeout(hideTargets,1200);
+ setTimeout(hideTargets,80);setTimeout(hideTargets,250);setTimeout(hideTargets,750);setTimeout(hideTargets,1500);
  var queued=false;
  var obs=new MutationObserver(function(){
-  if(!queued){
-   queued=true;
-   setTimeout(function(){queued=false;hideTargets();},0);
-  }
-  queueSkip();
+  if(!queued){queued=true;setTimeout(function(){queued=false;hideTargets();queueSkip();},0);}
  });
- obs.observe(document.documentElement,{
-  childList:true,subtree:true,characterData:true,attributes:true,
-  attributeFilter:['class','aria-selected','data-selected','data-active','data-focused','tabindex']
- });
+ obs.observe(document.documentElement,{childList:true,subtree:true,characterData:true,attributes:true,
+  attributeFilter:['class','role','aria-label','title','data-bind','data-action','data-event','data-command','onclick','aria-selected','data-selected','data-active','data-focused','tabindex']});
 })();
 )JS";
 
@@ -280,6 +296,7 @@ static const char kSuiteScript[] = R"JS(
   healthEnabled:1,healthHideDelayMs:2000,healthFadeDurationMs:300,healthOpacityPercent:80,healthShowDuringCombat:1,healthThresholdPercent:100,
   missionEnabled:1,missionInitialHideDelayMs:2000,missionAfterMapCloseHideDelayMs:3000,missionUpdateVisibleMs:7000,missionFadeDurationMs:300,missionShowInMap:1,
   crosshairEnabled:1,crosshairHideDelayMs:1000,crosshairFadeDurationMs:300,
+  crosshairDotEnabled:1,crosshairDotHideDelayMs:0,
   expeditionEnabled:1,expeditionHideDelayMs:2000,expeditionFadeDurationMs:300
  };
  var CDH=window.__ControlDynamicHUDSuite={
@@ -291,6 +308,7 @@ static const char kSuiteScript[] = R"JS(
  var hp={bar:null,fill:null,obs:null,timer:0,shown:true};
  var mission={map:null,log:null,obs:null,timer:0,shown:true};
  var cross={el:null,timer:0,shown:true,hideLatched:false};
+ var dot={root:null,el:null,pseudo:'',timer:0,hidden:false};
  var expedition={el:null,timer:0,shown:true};
  var resumeTimer=0,heartbeat=0,diagTimer=0,rebindTimer=0,forceTimer=0,forceUntil=0;
 
@@ -308,6 +326,9 @@ static const char kSuiteScript[] = R"JS(
   +'.mission-log-wrapper.cdh-in-map{opacity:1!important;}'
   +'.awesome-crosshair{transition:opacity '+CFG.crosshairFadeDurationMs+'ms var(--easing);}'
   +'.awesome-crosshair[data-cdh-crosshair-hidden="1"]{opacity:0!important;}'
+  +'.awesome-crosshair[data-cdh-dot-hidden="1"] .awesome-crosshair__dot,.awesome-crosshair[data-cdh-dot-hidden="1"] .awesome-crosshair-dot,.awesome-crosshair[data-cdh-dot-hidden="1"] .crosshair-dot,.awesome-crosshair[data-cdh-dot-hidden="1"] [class*="crosshair"][class*="dot"],.awesome-crosshair[data-cdh-dot-hidden="1"] [class*="reticul"][class*="dot"]{opacity:0!important;visibility:hidden!important;}'
+  +'[data-cdh-center-dot-hidden="1"]{opacity:0!important;visibility:hidden!important;}'
+  +'[data-cdh-dot-pseudo-before="1"]::before,[data-cdh-dot-pseudo-after="1"]::after{opacity:0!important;visibility:hidden!important;}'
   +'.expedition-hud>.expedition-mod-group{transition:opacity '+CFG.expeditionFadeDurationMs+'ms var(--easing);}'
   +'.expedition-hud>.expedition-mod-group[data-cdh-expedition-hidden="1"]{opacity:0!important;}'
   +'#cdh-diagnostic{position:absolute;left:18px;top:18px;z-index:2147483647;'
@@ -457,6 +478,102 @@ static const char kSuiteScript[] = R"JS(
   return true;
  }
 
+
+ function clearDotMark(){
+  if(dot.root)dot.root.setAttribute('data-cdh-dot-hidden','0');
+  if(dot.el){
+   dot.el.removeAttribute('data-cdh-center-dot-hidden');
+   dot.el.removeAttribute('data-cdh-dot-pseudo-before');
+   dot.el.removeAttribute('data-cdh-dot-pseudo-after');
+  }
+ }
+ function semanticDot(root){
+  var sels=['.awesome-crosshair__dot','.awesome-crosshair-dot','.crosshair-dot',
+   '[class*="crosshair"][class*="dot"]','[class*="reticul"][class*="dot"]',
+   '[class*="reticle"][class*="dot"]','[id*="crosshair"][id*="dot"]'];
+  for(var i=0;i<sels.length;i++){try{var e=root.querySelector(sels[i]);if(e)return e;}catch(x){}}
+  var all=root.querySelectorAll('*');
+  for(var j=0;j<all.length&&j<128;j++){
+   var e2=all[j],sg=(String(e2.className||'')+' '+String(e2.id||'')).toLowerCase();
+   if((sg.indexOf('dot')>=0||sg.indexOf('center')>=0||sg.indexOf('centre')>=0)&&
+      (sg.indexOf('crosshair')>=0||sg.indexOf('reticul')>=0||sg.indexOf('reticle')>=0))return e2;
+  }
+  return null;
+ }
+ function geometricDot(root){
+  var all=root.querySelectorAll('*'),rr=root.getBoundingClientRect();
+  var cx=window.innerWidth*0.5,cy=window.innerHeight*0.5;
+  if(rr&&rr.width>2&&rr.height>2){cx=rr.left+rr.width*0.5;cy=rr.top+rr.height*0.5;}
+  var best=null,bestScore=1000000;
+  for(var i=0;i<all.length&&i<160;i++){
+   var e=all[i],r;try{r=e.getBoundingClientRect();}catch(x){continue;}
+   var w=r.width,h=r.height;
+   if(w<0.5||h<0.5||w>18||h>18)continue;
+   var dx=Math.abs((r.left+w*0.5)-cx),dy=Math.abs((r.top+h*0.5)-cy);
+   if(dx>10||dy>10)continue;
+   var cs;try{cs=window.getComputedStyle(e);}catch(x2){cs=null;}
+   if(cs&&(cs.display==='none'||cs.visibility==='hidden'||parseFloat(cs.opacity||'1')<0.02))continue;
+   var sg=(String(e.className||'')+' '+String(e.id||'')).toLowerCase();
+   if(/ammo|target|enemy|lock|charge|hit|damage|prompt/.test(sg))continue;
+   var score=(dx+dy)*8+Math.abs(w-h)*5+(w*h)*0.04;
+   if(/dot|center|centre/.test(sg))score-=80;
+   if(e.children&&e.children.length)score+=12;
+   if(score<bestScore){bestScore=score;best=e;}
+  }
+  return best;
+ }
+ function pseudoDot(root){
+  var nodes=[root],q=root.querySelectorAll('*');
+  for(var i=0;i<q.length&&i<80;i++)nodes.push(q[i]);
+  for(var n=0;n<nodes.length;n++){
+   var e=nodes[n],sg=(String(e.className||'')+' '+String(e.id||'')).toLowerCase();
+   for(var p=0;p<2;p++){
+    var ps=p===0?'::before':'::after',cs;try{cs=window.getComputedStyle(e,ps);}catch(x){cs=null;}
+    if(!cs||cs.display==='none'||cs.visibility==='hidden'||parseFloat(cs.opacity||'1')<0.02)continue;
+    var w=parseFloat(cs.width),h=parseFloat(cs.height);
+    if(!(w>=0.5&&h>=0.5&&w<=18&&h<=18&&Math.abs(w-h)<=5))continue;
+    var pos=(String(cs.left||'')+' '+String(cs.top||'')).toLowerCase();
+    if(/dot|center|centre/.test(sg)||pos.indexOf('50%')>=0||e===root)return {el:e,pseudo:p===0?'before':'after'};
+   }
+  }
+  return null;
+ }
+ function setDotHidden(v){
+  if(!dot.root||!dot.root.isConnected)return;
+  dot.root.setAttribute('data-cdh-dot-hidden',v?'1':'0');
+  if(dot.el){
+   if(dot.pseudo==='before')dot.el.setAttribute('data-cdh-dot-pseudo-before',v?'1':'0');
+   else if(dot.pseudo==='after')dot.el.setAttribute('data-cdh-dot-pseudo-after',v?'1':'0');
+   else dot.el.setAttribute('data-cdh-center-dot-hidden',v?'1':'0');
+  }
+  dot.hidden=v;
+ }
+ function scheduleCrosshairDotHide(){
+  clearTimer(dot);
+  if(!active||!CFG.crosshairDotEnabled||!dot.root)return;
+  if(isForced()){setDotHidden(false);return;}
+  if(CFG.crosshairDotHideDelayMs===0){setDotHidden(true);return;}
+  setDotHidden(false);
+  dot.timer=setTimeout(function(){dot.timer=0;if(active&&!isForced()&&dot.root&&dot.root.isConnected)setDotHidden(true);},CFG.crosshairDotHideDelayMs);
+ }
+ function bindCrosshairDot(){
+  if(!active||!CFG.crosshairDotEnabled)return false;
+  var root=document.querySelector('.awesome-crosshair');
+  if(!root){clearTimer(dot);clearDotMark();dot.root=null;dot.el=null;dot.pseudo='';dot.hidden=false;CDH.crosshairDot=false;return false;}
+  var changed=root!==dot.root;
+  if(changed){clearTimer(dot);clearDotMark();dot.root=root;dot.el=null;dot.pseudo='';dot.hidden=false;}
+  var candidate=semanticDot(root),pseudo='';
+  if(!candidate)candidate=geometricDot(root);
+  if(!candidate){var pd=pseudoDot(root);if(pd){candidate=pd.el;pseudo=pd.pseudo;}}
+  if(candidate!==dot.el||pseudo!==dot.pseudo){
+   clearTimer(dot);clearDotMark();dot.root=root;dot.el=candidate;dot.pseudo=pseudo;dot.hidden=false;changed=true;
+  }
+  CDH.crosshairDot=!!candidate;
+  if(isForced())setDotHidden(false);
+  else if(changed||(!dot.hidden&&!dot.timer))scheduleCrosshairDotHide();
+  return true;
+ }
+
  function setExpeditionHidden(v){
   if(!expedition.el||!expedition.el.isConnected)return;
   expedition.el.setAttribute('data-cdh-expedition-hidden',v?'1':'0');expedition.shown=!v;
@@ -491,7 +608,7 @@ static const char kSuiteScript[] = R"JS(
   rebindTimer=0;
   if(!active)return;
   addStyle();
-  bindHealth();bindMission();bindCrosshair();bindExpedition();updateDiag();
+  bindHealth();bindMission();bindCrosshair();bindCrosshairDot();bindExpedition();updateDiag();
  }
  function scheduleRebind(ms){
   if(!active||rebindTimer)return;
@@ -508,10 +625,10 @@ static const char kSuiteScript[] = R"JS(
  function suspendHud(){
   if(resumeTimer){clearTimeout(resumeTimer);resumeTimer=0;}
   if(rebindTimer){clearTimeout(rebindTimer);rebindTimer=0;}
-  clearTimer(hp);clearTimer(mission);clearTimer(cross);clearTimer(expedition);
+  clearTimer(hp);clearTimer(mission);clearTimer(cross);clearTimer(dot);clearTimer(expedition);
   disconnectObserver(hp);disconnectObserver(mission);
-  hp.bar=null;hp.fill=null;mission.map=null;mission.log=null;cross.el=null;expedition.el=null;
-  CDH.health=false;CDH.mission=false;CDH.crosshair=false;CDH.expedition=false;
+  clearDotMark();hp.bar=null;hp.fill=null;mission.map=null;mission.log=null;cross.el=null;dot.root=null;dot.el=null;dot.pseudo='';dot.hidden=false;expedition.el=null;
+  CDH.health=false;CDH.mission=false;CDH.crosshair=false;CDH.crosshairDot=false;CDH.expedition=false;
   updateDiag();
  }
  function resumeHud(){
@@ -529,6 +646,7 @@ static const char kSuiteScript[] = R"JS(
    (CFG.healthEnabled&&(!hp.bar||!hp.fill||!hp.bar.isConnected||!hp.fill.isConnected))||
    (CFG.missionEnabled&&(!mission.map||!mission.log||!mission.map.isConnected||!mission.log.isConnected))||
    (CFG.crosshairEnabled&&(!cross.el||!cross.el.isConnected))||
+   (CFG.crosshairDotEnabled&&(!dot.root||!dot.root.isConnected))||
    (CFG.expeditionEnabled&&(!expedition.el||!expedition.el.isConnected));
   if(needs)scheduleRebind(0);
  }
@@ -536,17 +654,18 @@ static const char kSuiteScript[] = R"JS(
  function forceShowHUD(){
   if(!active)return;
   forceUntil=Date.now()+CFG.showHudDurationMs;CDH.forceVisible=true;
-  clearTimer(hp);clearTimer(mission);clearTimer(cross);clearTimer(expedition);
+  clearTimer(hp);clearTimer(mission);clearTimer(cross);clearTimer(dot);clearTimer(expedition);
   if(hp.bar)setHpHidden(false);
   if(mission.log)missionShow();
   if(cross.el){setCrossHidden(false);}
+  if(dot.root)setDotHidden(false);
   if(expedition.el)setExpeditionHidden(false);
   if(forceTimer)clearTimeout(forceTimer);
   forceTimer=setTimeout(function(){
    forceTimer=0;forceUntil=0;CDH.forceVisible=false;
    if(!active)return;
    cross.hideLatched=false;
-   updateHealth();onMapChanged();updateCrosshair();scheduleExpeditionHide();
+   updateHealth();onMapChanged();updateCrosshair();bindCrosshairDot();scheduleCrosshairDotHide();scheduleExpeditionHide();
   },CFG.showHudDurationMs);
   updateDiag();
  }
@@ -559,7 +678,7 @@ static const char kSuiteScript[] = R"JS(
   p.textContent=
    'Control Dynamic HUD v1.0N configurable suite\n'
   +'HUD '+yes(hudVisible)+' | active '+yes(active)+' | force '+yes(isForced())+' | aim '+yes(isAiming)+' | key '+CFG.showHudKey+'\n'
-  +'health '+yes(CDH.health)+' | mission '+yes(CDH.mission)+' | crosshair '+yes(CDH.crosshair)+' | expedition '+yes(CDH.expedition)+'\n'
+  +'health '+yes(CDH.health)+' | mission '+yes(CDH.mission)+' | crosshair '+yes(CDH.crosshair)+' | dot '+yes(CDH.crosshairDot)+' | expedition '+yes(CDH.expedition)+'\n'
   +'ammo '+yes(!!document.querySelector('.awesome-crosshair--ammo'))+' | enemyHP '+yes(!!document.querySelector('.enemy-health-container'))+' | energy '+yes(!!document.querySelector('.ability-resource-bar'))+'\n'
   +'pickup '+yes(!!document.querySelector('.pickup-notifications-container'))+' | interaction '+yes(!!document.querySelector('.interaction-marker-container'))+' | threat '+yes(!!document.querySelector('.threat-indicators'))+
    (CDH.lastError?'\nERR '+CDH.lastError:'');
@@ -793,6 +912,8 @@ static void build_config_script(){
     p=app(p,end,",crosshairEnabled:");p=app_u32(p,end,g_cfg.crosshairEnabled?1:0);
     p=app(p,end,",crosshairHideDelayMs:");p=app_u32(p,end,g_cfg.crosshairHideDelayMs);
     p=app(p,end,",crosshairFadeDurationMs:");p=app_u32(p,end,g_cfg.crosshairFadeDurationMs);
+    p=app(p,end,",crosshairDotEnabled:");p=app_u32(p,end,g_cfg.crosshairDotEnabled?1:0);
+    p=app(p,end,",crosshairDotHideDelayMs:");p=app_u32(p,end,g_cfg.crosshairDotHideDelayMs);
     p=app(p,end,",expeditionEnabled:");p=app_u32(p,end,g_cfg.expeditionEnabled?1:0);
     p=app(p,end,",expeditionHideDelayMs:");p=app_u32(p,end,g_cfg.expeditionHideDelayMs);
     p=app(p,end,",expeditionFadeDurationMs:");p=app_u32(p,end,g_cfg.expeditionFadeDurationMs);
@@ -1381,7 +1502,7 @@ static bool install_hook(WinApi& api,uptr target){
     DWORD dummy=0;api.VirtualProtect((void*)target,stolen,old,&dummy);api.FlushInstructionCache((HANDLE)(uptr)-1,(void*)target,stolen);return true;
 }
 
-extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 113;}
+extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 114;}
 extern "C" __declspec(dllexport) void* CDH_RelocAnchor=(void*)&CDH_Version;
 
 extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
@@ -1393,7 +1514,7 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     load_config(api);g_showHudVk=parse_vk(g_cfg.showHudKey);build_config_script();
     g_WriteFile=api.WriteFile;g_log=api.CreateFileW(L"plugins\\ControlDynamicHUD.log",GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
     if(!g_log||(uptr)g_log==INVALID_HANDLE_VALUE_U)return 1;
-    log_line("Control Dynamic HUD V1.0N PRE-NOTIFY MULTILAUNCH + NATIVE DOT + MENU MODEL TEST");log_line("Mode: Multi Launch pre-notification hide + native CrosshairData min-size override + MenuOptions mission suppression");
+    log_line("Control Dynamic HUD V1.0O MENU ENTRY + INDEPENDENT CENTER DOT TEST");log_line("Mode: V1.0N cumulative base + robust main-menu cleanup + independent Coherent center-dot suppression");
     log_cstr("Config: Enabled=");log_dec(g_cfg.enabled?1:0);log_cstr(" ShowHUDKey=");log_cstr(g_cfg.showHudKey);log_cstr(" VK=");log_hex(g_showHudVk);log_cstr(" ShowHUDDurationMs=");log_dec(g_cfg.showHudDurationMs);
     log_cstr(" HideNewGame=");log_dec(g_cfg.mainMenuHideNewGame?1:0);
     log_cstr(" HideMissionSelect=");log_dec(g_cfg.mainMenuHideMissionSelect?1:0);
@@ -1406,8 +1527,7 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
         log_line("Mission Select MenuOptions suppression not installed; DOM fallback remains active.");
     if(!install_multilaunch_update_hook(api,exe))
         log_line("Multi Launch pre-notification hook not installed; feature fails open.");
-    if(!install_crosshair_dot_hook(api,exe))
-        log_line("CrosshairDot native updater hook not installed; feature fails open.");
+    log_line("CrosshairDot V1.0O uses independent Coherent center-dot suppression; V1.0N min-reticle native override disabled.");
     void* coh=find_module("coherentuigt.dll");g_coherentBase=coh;log_cstr("CoherentUIGT.dll: ");if(coh){log_hex((uptr)coh);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
     void* ui=find_module("ui_rmdwin10_f.dll");log_cstr("ui_rmdwin10_f.dll: ");if(ui){log_hex((uptr)ui);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
     const char* pageGetViewName="?getView@Page@ui@@QEAAPEAVView@UIGT@Coherent@@XZ";
