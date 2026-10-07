@@ -1237,7 +1237,7 @@ static u32 scan_masked_all(void* exe,const u8* pat,const char* mask,usize plen,u
 // NoHighlight applies +4 and changes 0F 85 -> 90 E9.
 static const u8 kReg2kLaunchHighlightPat[] = {
 0x83,0x7D,0x50,0x00,0x0F,0x85,0,0,0,0,0,0,0,0x0F,0x84,0,0,0,0,0x49,0x8B,0x85,0,0,0,0};
-static const char kReg2kLaunchHighlightMask[] = "xxxxxx???????xx????xxxx???";
+static const char kReg2kLaunchHighlightMask[] = "xxxxxx???????xx????xxx????";
 
 static bool locate_reg2k_launch_highlight(void* exe){
     uptr matches[4]={0,0,0,0};
