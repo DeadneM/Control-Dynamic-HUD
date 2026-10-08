@@ -1170,6 +1170,9 @@ static bool patch_ground_slam_target_circle(void* exe){
     return true;
 }
 
+static u32 scan_masked_all(void* exe,const u8* pat,const char* mask,usize plen,uptr* out,u32 cap);
+static bool install_code_detour(WinApi& api,uptr target,void* hook,void** original,usize stolen);
+
 // Native UIMainMenu input -> page event bridge.
 // The audited event table is:
 //   index 6 = OnNavigateUp
