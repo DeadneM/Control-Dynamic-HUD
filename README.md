@@ -1,7 +1,7 @@
 # Control Dynamic HUD
 
 <p align="center">
-  <img src="docs/bannercontrol.png" alt="Control Dynamic HUD" width="100%">
+  <img src="docs/BannerControl.png" alt="Control Dynamic HUD" width="100%">
 </p>
 
 <p align="center">
