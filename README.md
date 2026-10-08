@@ -15,11 +15,11 @@ V0.9 fixed the core lifecycle problems:
 - persistent slot-28 lifecycle hook survives pause/menu page recreation;
 - no legacy per-frame reinjection storm.
 
-### V1.0U split Launch highlight test candidate
+### V1.0X native main-menu navigation test candidate
 
-Branch: `test/v1.0u-split-highlight`
+Branch: `test/v1.0x-native-menu-nav`
 
-V1.0U keeps the validated V1.0S center-dot mask unchanged. V1.0T confirmed that reg2k's NoHighlight engine-level Launch path is the correct family of code, but its broad branch skip removes both the object-attached icon and the white world outline together. V1.0U splits those outputs: `LaunchIndicator.m_bHighlightVisible` controls the icon, while `HighlightComponentState.m_out_pRenderObject` controls the white outline. Each can now be disabled independently. For the main-menu save-protection path, V1.0U also identifies and skips only the exact `Page::bind("OnNewGameClicked", ...)` block before Coherent binding, while retaining the native action guard and DOM cleanup as safety fallbacks.
+V1.0X is based on the stable V1.0U1 HUD behavior. The center-dot mask and split Multi Launch icon/outline paths are frozen. V1.0X changes only the remaining New Game navigation ghost: it hooks the native UIMainMenu input-to-page bridge that dispatches `OnNavigateUp`, `OnNavigateDown`, `OnNavigateLeft`, `OnNavigateRight`, `OnSelect`, and `OnBack`. The audited input table maps Up=6 and Down=7. When the tracked selection crosses the removed New Game index between Continue and Options, the plugin dispatches one additional native page event so the ghost slot is skipped in the same movement.
 
 Currently configurable:
 
@@ -205,9 +205,9 @@ The important current-build findings are:
 - V1.0D real-aim crosshair behavior validated;
 - Launch target reticle validated in V1.0L;
 - V1.0M post-update Multi Launch suppression and DOM center-dot search rejected;
-- validate V1.0U independent `HideIcon` / `HideOutline` paths and F1 republish behavior;
+- V1.0U1 HUD behavior reported working in-game; keep dot and split Multi Launch paths frozen;
 - V1.0S+ center-pixel mask validated for the normal crosshair dot; keep this path frozen;
-- validate V1.0U pre-Coherent `OnNewGameClicked` binding suppression plus existing fallback cleanup;
+- validate V1.0X native UIMainMenu input-bridge ghost skip between Continue and Options;
 - validate the hardened Expedition forced-modifier behavior;
 - add configurable behavior for additional HUD elements where safe;
 - optional in-game configuration overlay later;
