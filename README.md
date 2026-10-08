@@ -1,5 +1,15 @@
 # Control Dynamic HUD
 
+<p align="center">
+  <img src="docs/bannercontrol.png" alt="Control Dynamic HUD" width="100%">
+</p>
+
+<p align="center">
+  <strong>A configurable dynamic HUD mod for Control on PC.</strong>
+</p>
+
+---
+
 A modern dynamic-HUD plugin for **Control** (PC), rebuilt as a native x64 plugin for the existing Control Plugin Loader.
 
 ## Current status
