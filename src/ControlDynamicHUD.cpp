@@ -2236,7 +2236,7 @@ static bool install_hook(WinApi& api,uptr target){
     DWORD dummy=0;api.VirtualProtect((void*)target,stolen,old,&dummy);api.FlushInstructionCache((HANDLE)(uptr)-1,(void*)target,stolen);return true;
 }
 
-extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 127;}
+extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 128;}
 extern "C" __declspec(dllexport) void* CDH_RelocAnchor=(void*)&CDH_Version;
 
 extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
@@ -2248,7 +2248,7 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     load_config(api);g_showHudVk=parse_vk(g_cfg.showHudKey);build_config_script();
     g_WriteFile=api.WriteFile;g_log=api.CreateFileW(L"plugins\\ControlDynamicHUD.log",GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
     if(!g_log||(uptr)g_log==INVALID_HANDLE_VALUE_U)return 1;
-    log_line("Control Dynamic HUD V1.0Z PAGE-BIND WINDOW TEST");log_line("Mode: U1 HUD frozen + Y navigation wrapper moved into first Page::bind window");
+    log_line("Control Dynamic HUD v1.0.0");log_line("Mode: validated configurable HUD + Page::bind-window main-menu save protection");
     log_cstr("Config: Enabled=");log_dec(g_cfg.enabled?1:0);log_cstr(" ShowHUDKey=");log_cstr(g_cfg.showHudKey);log_cstr(" VK=");log_hex(g_showHudVk);log_cstr(" ShowHUDDurationMs=");log_dec(g_cfg.showHudDurationMs);
     log_cstr(" HideNewGame=");log_dec(g_cfg.mainMenuHideNewGame?1:0);
     log_cstr(" HideMissionSelect=");log_dec(g_cfg.mainMenuHideMissionSelect?1:0);
@@ -2265,8 +2265,8 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     if(g_cfg.mainMenuHideMissionSelect&&!patch_mission_select_menu_model(exe))
         log_line("Mission Select MenuOptions suppression not installed; DOM fallback remains active.");
     if(g_cfg.mainMenuHideNewGame)
-        log_line("New Game has no MenuOptions visibility flag; V1.0Z keeps the Y navigation wrapper but moves its injection into the first native ui::Page::bind window after visual/base setup.");
-    log_line("V1.0Z keeps validated U1 HUD paths frozen; only the Y menu wrapper timing changes from pre-ready to first Page::bind.");
+        log_line("New Game has no MenuOptions visibility flag; v1.0.0 uses the validated first-ui::Page::bind navigation wrapper after visual/base setup.");
+    log_line("v1.0.0 promotes the validated U1 HUD paths and first-Page::bind main-menu navigation timing.");
     if(g_cfg.multiLaunchHideIcon||g_cfg.multiLaunchHideOutline){
         if(locate_split_launch_highlights(exe)){
             if(g_cfg.multiLaunchHideOutline)
@@ -2277,7 +2277,7 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
             log_line("Split Launch highlight signatures unavailable; affected feature fails open.");
         }
     }
-    log_line("CrosshairDot V1.0Z keeps the validated V1.0S center mask unchanged; HUD paths otherwise identical to validated U1.");
+    log_line("CrosshairDot v1.0.0 keeps the validated V1.0S center mask unchanged; HUD paths otherwise identical to validated U1.");
     void* coh=find_module("coherentuigt.dll");g_coherentBase=coh;log_cstr("CoherentUIGT.dll: ");if(coh){log_hex((uptr)coh);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
     void* ui=find_module("ui_rmdwin10_f.dll");log_cstr("ui_rmdwin10_f.dll: ");if(ui){log_hex((uptr)ui);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
     const char* pageGetViewName="?getView@Page@ui@@QEAAPEAVView@UIGT@Coherent@@XZ";
