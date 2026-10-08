@@ -54,6 +54,7 @@ typedef void (WINAPI *UpdateFn)(void*);
 typedef void (WINAPI *MultiLaunchUpdateFn)(void*,u32,void*,void*);
 typedef void (WINAPI *CrosshairUpdateFn)(void*,void*,void*);
 typedef void (WINAPI *HighlightRefreshFn)(void*);
+typedef void (WINAPI *PageBindFn)(void*,int,const void*,void*);
 typedef void* (WINAPI *MenuFactoryFn)(void*);
 
 static HANDLE g_log = nullptr;
@@ -121,6 +122,12 @@ static MenuFactoryFn g_originalMenuFactory = nullptr;
 static ReadyFn g_originalMenuReady = nullptr;
 static uptr* g_menuReadyEntry = nullptr;
 static volatile u32 g_menuReadyCalls = 0;
+static PageBindFn g_originalPageBind = nullptr;
+static uptr* g_pageBindIat = nullptr;
+static void* g_mainMenuPage = nullptr;
+static bool g_menuBindWindowInstalled = false;
+static bool g_menuBindPreInjected = false;
+static u32 g_menuBindPreInjectAttempts = 0;
 
 struct Config {
     bool enabled;
@@ -212,8 +219,8 @@ static const char kMainMenuScript[] = R"JS(
 (function(){
  var CFG=window.__CDH_MAINMENU_CONFIG||{hideNewGame:0,hideMissionSelect:0};
  if(!CFG.hideNewGame&&!CFG.hideMissionSelect)return;
- if(window.__ControlDynamicHUDMainMenu&&window.__ControlDynamicHUDMainMenu.version==='1.0Y')return;
- window.__ControlDynamicHUDMainMenu={version:'1.0Y'};
+ if(window.__ControlDynamicHUDMainMenu&&window.__ControlDynamicHUDMainMenu.version==='1.0Z')return;
+ window.__ControlDynamicHUDMainMenu={version:'1.0Z'};
 
  var style=document.getElementById('cdh-mainmenu-style');
  if(!style){style=document.createElement('style');style.id='cdh-mainmenu-style';(document.head||document.documentElement).appendChild(style);}
@@ -468,7 +475,7 @@ static const char kSuiteScript[] = R"JS(
   expeditionEnabled:1,expeditionHideDelayMs:2000,expeditionFadeDurationMs:300
  };
  var CDH=window.__ControlDynamicHUDSuite={
-  version:'1.0Y',health:false,mission:false,crosshair:false,expedition:false,
+  version:'1.0Z',health:false,mission:false,crosshair:false,expedition:false,
   hudVisible:true,active:true,lastError:'',forceVisible:false
  };
  var MODE={COMBAT:0,ADVENTURING:1,STORY:2,ACTION:3,EXAMINE:4,HIDDEN:5};
@@ -1940,33 +1947,115 @@ static void restore_menu_ready_hook(){
     }
     g_menuReadyEntry=nullptr;
 }
-static void WINAPI HookMenuReady(void* self){
-    u32 n=++g_menuReadyCalls;
-    void* view=(self&&g_pageGetView)?g_pageGetView(self):nullptr;
+static bool inject_menu_nav_wrapper(void* page,const char* where){
+    if(!page||!g_pageGetView||!g_coherentBase)return false;
+    void* view=g_pageGetView(page);
     uptr vt=view?rdptr(view):0;
     uptr exec=vt?rdptr((u8*)vt+61u*sizeof(uptr)):0;
     uptr expectedVt=(uptr)g_coherentBase+kPublicViewVtableRva;
     uptr expected=(uptr)g_coherentBase+kExecuteScriptRva;
-    bool injectable=view&&vt==expectedVt&&exec==expected;
+    if(!view||vt!=expectedVt||exec!=expected)return false;
+    ((ExecuteScriptFn)exec)(view,kMainMenuPreReadyScript,nullptr);
+    log_cstr("Main menu navigation wrapper injected at ");
+    log_cstr(where);
+    log_bytes("\r\n",2);
+    return true;
+}
 
-    // Critical ordering for V1.0Y: install the engine.on wrapper BEFORE the game's
-    // original onReadyForBindings registers OnNavigateUp/OnNavigateDown handlers.
-    if(injectable){
-        ((ExecuteScriptFn)exec)(view,kMainMenuPreReadyScript,nullptr);
-        log_line("Main menu pre-ready navigation wrapper injected before original onReadyForBindings.");
-    }else{
-        log_line("Main menu pre-ready wrapper could not access the public View; continuing fail-open.");
+static void WINAPI HookPageBind(void* page,int bindType,const void* name,void* handler){
+    if(page==g_mainMenuPage&&!g_menuBindPreInjected&&g_cfg.mainMenuHideNewGame){
+        ++g_menuBindPreInjectAttempts;
+        // This is deliberately inside the original onReadyForBindings, after
+        // Page/base/model setup but immediately before the first callback bind.
+        if(inject_menu_nav_wrapper(page,"first ui::Page::bind window")){
+            g_menuBindPreInjected=true;
+        }else if(g_menuBindPreInjectAttempts<=3){
+            log_line("Main menu bind-window injection not ready yet; will retry on the next Page::bind.");
+        }
+    }
+    if(g_originalPageBind)g_originalPageBind(page,bindType,name,handler);
+}
+
+static bool install_menu_page_bind_iat_hook(void* ui,uptr originalReady){
+    if(g_pageBindIat&&g_originalPageBind)return true;
+    if(!ui||!originalReady||!g_VirtualProtect)return false;
+
+    const char* bindName="?bind@Page@ui@@AEAAXW4BindType@Binding@2@AEBV?$InplaceString@$0EA@@r@@PEAVIEventHandler@UIGT@Coherent@@@Z";
+    uptr bindExport=(uptr)resolve_export(ui,bindName);
+    if(!bindExport){
+        log_line("Main menu Page::bind export not found.");
+        return false;
+    }
+
+    uptr uniqueSlot=0;
+    u32 callMatches=0;
+    u8* p=(u8*)originalReady;
+    // Current UIMainMenu onReadyForBindings is comfortably inside this window.
+    for(u32 i=0;i+6<0x1400;++i){
+        if(p[i]!=0xFF||p[i+1]!=0x15)continue;
+        s32 rel=*(s32*)(p+i+2);
+        uptr* slot=(uptr*)(p+i+6+(s64)rel);
+        uptr target=rdptr(slot);
+        if(target!=bindExport)continue;
+        ++callMatches;
+        if(!uniqueSlot)uniqueSlot=(uptr)slot;
+        else if(uniqueSlot!=(uptr)slot){
+            log_line("Main menu Page::bind locator found multiple IAT slots; refusing hook.");
+            return false;
+        }
+    }
+
+    log_cstr("Main menu Page::bind callsites in original ready: ");log_dec(callMatches);
+    log_cstr(" IAT=");log_hex(uniqueSlot);
+    log_cstr(" export=");log_hex(bindExport);
+    log_bytes("\r\n",2);
+    if(!callMatches||!uniqueSlot)return false;
+
+    g_pageBindIat=(uptr*)uniqueSlot;
+    g_originalPageBind=(PageBindFn)rdptr(g_pageBindIat);
+    if((uptr)g_originalPageBind!=bindExport){
+        g_pageBindIat=nullptr;g_originalPageBind=nullptr;
+        return false;
+    }
+
+    DWORD old=0;
+    if(!g_VirtualProtect(g_pageBindIat,sizeof(uptr),PAGE_EXECUTE_READWRITE,&old)){
+        g_pageBindIat=nullptr;g_originalPageBind=nullptr;
+        return false;
+    }
+    *g_pageBindIat=(uptr)&HookPageBind;
+    DWORD dummy=0;g_VirtualProtect(g_pageBindIat,sizeof(uptr),old,&dummy);
+    if(g_FlushInstructionCache)g_FlushInstructionCache((HANDLE)(uptr)-1,g_pageBindIat,sizeof(uptr));
+    log_line("Main menu Page::bind IAT hook installed.");
+    return true;
+}
+
+static void WINAPI HookMenuReady(void* self){
+    u32 n=++g_menuReadyCalls;
+
+    // V1.0Z normally injects the engine.on wrapper from HookPageBind, after the
+    // menu's visual/base setup has run. If the bind IAT hook was unavailable,
+    // fall back to V1.0Y's proven early injection so navigation remains protected.
+    if(!g_menuBindWindowInstalled&&g_cfg.mainMenuHideNewGame){
+        if(inject_menu_nav_wrapper(self,"pre-ready fallback")){
+            g_menuBindPreInjected=true;
+        }else{
+            log_line("Main menu pre-ready fallback wrapper unavailable; continuing fail-open.");
+        }
     }
 
     if(g_originalMenuReady)g_originalMenuReady(self);
     log_cstr("Main menu onReadyForBindings #");log_dec(n);log_bytes("\r\n",2);
 
-    // Re-fetch in case the original callback changed the binding context.
-    view=(self&&g_pageGetView)?g_pageGetView(self):nullptr;
-    vt=view?rdptr(view):0;
-    exec=vt?rdptr((u8*)vt+61u*sizeof(uptr)):0;
-    injectable=view&&vt==expectedVt&&exec==expected;
-    if(!injectable)return;
+    if(g_menuBindWindowInstalled&&!g_menuBindPreInjected&&g_cfg.mainMenuHideNewGame)
+        log_line("WARNING: Page::bind window hook installed but navigation wrapper was not injected.");
+
+    void* view=(self&&g_pageGetView)?g_pageGetView(self):nullptr;
+    uptr vt=view?rdptr(view):0;
+    uptr exec=vt?rdptr((u8*)vt+61u*sizeof(uptr)):0;
+    uptr expectedVt=(uptr)g_coherentBase+kPublicViewVtableRva;
+    uptr expected=(uptr)g_coherentBase+kExecuteScriptRva;
+    if(!view||vt!=expectedVt||exec!=expected)return;
     ((ExecuteScriptFn)exec)(view,g_menuConfigScript,nullptr);
     ((ExecuteScriptFn)exec)(view,kMainMenuScript,nullptr);
     log_line("Main menu cleanup script injected after original onReadyForBindings.");
@@ -1977,6 +2066,14 @@ static bool install_menu_ready_hook(void* menu){
     uptr* entry=(uptr*)(vt+28u*sizeof(uptr));
     uptr original=*entry;if(!original)return false;
     g_originalMenuReady=(ReadyFn)original;g_menuReadyEntry=entry;
+    g_mainMenuPage=menu;
+    g_menuBindPreInjected=false;
+    g_menuBindPreInjectAttempts=0;
+    void* ui=find_module("ui_rmdwin10_f.dll");
+    g_menuBindWindowInstalled=install_menu_page_bind_iat_hook(ui,original);
+    log_line(g_menuBindWindowInstalled?
+      "V1.0Z bind-window navigation injection armed.":
+      "V1.0Z bind-window hook unavailable; Y pre-ready fallback will be used.");
     DWORD old=0;
     if(!g_VirtualProtect((void*)entry,sizeof(uptr),PAGE_EXECUTE_READWRITE,&old)){
         g_menuReadyEntry=nullptr;g_originalMenuReady=nullptr;return false;
@@ -1989,7 +2086,12 @@ static bool install_menu_ready_hook(void* menu){
 }
 static void* WINAPI HookMenuFactory(void* a){
     void* r=g_originalMenuFactory?g_originalMenuFactory(a):nullptr;
-    if(r&&!g_menuReadyEntry)install_menu_ready_hook(r);
+    if(r){
+        g_mainMenuPage=r;
+        g_menuBindPreInjected=false;
+        g_menuBindPreInjectAttempts=0;
+        if(!g_menuReadyEntry)install_menu_ready_hook(r);
+    }
     return r;
 }
 static bool install_menu_factory_hook(WinApi& api,uptr target){
@@ -2134,7 +2236,7 @@ static bool install_hook(WinApi& api,uptr target){
     DWORD dummy=0;api.VirtualProtect((void*)target,stolen,old,&dummy);api.FlushInstructionCache((HANDLE)(uptr)-1,(void*)target,stolen);return true;
 }
 
-extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 126;}
+extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 127;}
 extern "C" __declspec(dllexport) void* CDH_RelocAnchor=(void*)&CDH_Version;
 
 extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
@@ -2146,7 +2248,7 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     load_config(api);g_showHudVk=parse_vk(g_cfg.showHudKey);build_config_script();
     g_WriteFile=api.WriteFile;g_log=api.CreateFileW(L"plugins\\ControlDynamicHUD.log",GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
     if(!g_log||(uptr)g_log==INVALID_HANDLE_VALUE_U)return 1;
-    log_line("Control Dynamic HUD V1.0Y PRE-READY NAV WRAP TEST");log_line("Mode: U1 validated HUD frozen + pre-onReadyForBindings Coherent navigation wrapper");
+    log_line("Control Dynamic HUD V1.0Z PAGE-BIND WINDOW TEST");log_line("Mode: U1 HUD frozen + Y navigation wrapper moved into first Page::bind window");
     log_cstr("Config: Enabled=");log_dec(g_cfg.enabled?1:0);log_cstr(" ShowHUDKey=");log_cstr(g_cfg.showHudKey);log_cstr(" VK=");log_hex(g_showHudVk);log_cstr(" ShowHUDDurationMs=");log_dec(g_cfg.showHudDurationMs);
     log_cstr(" HideNewGame=");log_dec(g_cfg.mainMenuHideNewGame?1:0);
     log_cstr(" HideMissionSelect=");log_dec(g_cfg.mainMenuHideMissionSelect?1:0);
@@ -2163,8 +2265,8 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     if(g_cfg.mainMenuHideMissionSelect&&!patch_mission_select_menu_model(exe))
         log_line("Mission Select MenuOptions suppression not installed; DOM fallback remains active.");
     if(g_cfg.mainMenuHideNewGame)
-        log_line("New Game has no MenuOptions visibility flag; V1.0Y keeps the stable action guard + DOM removal and installs the Coherent navigation wrapper before the original onReadyForBindings.");
-    log_line("V1.0Y keeps validated U1 HUD paths frozen; only main-menu pre-ready Coherent handler wrapping is new.");
+        log_line("New Game has no MenuOptions visibility flag; V1.0Z keeps the Y navigation wrapper but moves its injection into the first native ui::Page::bind window after visual/base setup.");
+    log_line("V1.0Z keeps validated U1 HUD paths frozen; only the Y menu wrapper timing changes from pre-ready to first Page::bind.");
     if(g_cfg.multiLaunchHideIcon||g_cfg.multiLaunchHideOutline){
         if(locate_split_launch_highlights(exe)){
             if(g_cfg.multiLaunchHideOutline)
@@ -2175,7 +2277,7 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
             log_line("Split Launch highlight signatures unavailable; affected feature fails open.");
         }
     }
-    log_line("CrosshairDot V1.0Y keeps the validated V1.0S center mask unchanged; HUD paths otherwise identical to validated U1.");
+    log_line("CrosshairDot V1.0Z keeps the validated V1.0S center mask unchanged; HUD paths otherwise identical to validated U1.");
     void* coh=find_module("coherentuigt.dll");g_coherentBase=coh;log_cstr("CoherentUIGT.dll: ");if(coh){log_hex((uptr)coh);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
     void* ui=find_module("ui_rmdwin10_f.dll");log_cstr("ui_rmdwin10_f.dll: ");if(ui){log_hex((uptr)ui);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
     const char* pageGetViewName="?getView@Page@ui@@QEAAPEAVView@UIGT@Coherent@@XZ";
