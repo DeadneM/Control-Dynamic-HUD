@@ -1174,6 +1174,7 @@ static bool patch_ground_slam_target_circle(void* exe){
 
 static u32 scan_masked_all(void* exe,const u8* pat,const char* mask,usize plen,uptr* out,u32 cap);
 static bool install_code_detour(WinApi& api,uptr target,void* hook,void** original,usize stolen);
+static bool cstr_eq_exact(const char* a,const char* b);
 
 // Native UIMainMenu input -> page event bridge.
 // The audited event table is:
