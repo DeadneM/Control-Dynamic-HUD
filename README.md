@@ -15,11 +15,11 @@ V0.9 fixed the core lifecycle problems:
 - persistent slot-28 lifecycle hook survives pause/menu page recreation;
 - no legacy per-frame reinjection storm.
 
-### V1.0U split Launch highlight test candidate
+### V1.0V menu-navigation ghost test candidate
 
-Branch: `test/v1.0u-split-highlight`
+Branch: `test/v1.0v-menu-sentinel`
 
-V1.0U keeps the validated V1.0S center-dot mask unchanged. V1.0T confirmed that reg2k's NoHighlight engine-level Launch path is the correct family of code, but its broad branch skip removes both the object-attached icon and the white world outline together. V1.0U splits those outputs: `LaunchIndicator.m_bHighlightVisible` controls the icon, while `HighlightComponentState.m_out_pRenderObject` controls the white outline. Each can now be disabled independently. For the main-menu save-protection path, V1.0U also identifies and skips only the exact `Page::bind("OnNewGameClicked", ...)` block before Coherent binding, while retaining the native action guard and DOM cleanup as safety fallbacks.
+V1.0V is based on the stable V1.0U1 crashfix HUD behavior. The V1.0S center-dot mask remains frozen and validated. V1.0U1 keeps the independent `LaunchIndicator.m_bHighlightVisible` icon suppression and `HighlightComponentState.m_out_pRenderObject` white-outline suppression while removing the two experimental control-flow detours that caused a crash after Continue in V1.0U. In-game testing reported the HUD side working correctly. V1.0V changes only the remaining New Game navigation ghost: the visual row is still removed, but a geometry-only sentinel remembers its old slot so the script can detect and skip the native invisible navigation index.
 
 Currently configurable:
 
@@ -161,7 +161,7 @@ HideMissionSelect=0
 
 These options are not only cosmetic. Their purpose is to **protect a completed-game autosave**. After the story is finished, returning through Mission Select can move progression back to an earlier mission and subsequent autosaves can replace the completed-state save. Starting New Game can replace/delete the active completed-game save path entirely. The intended protected workflow is therefore: once the game is completed, continue playing only from the completed-state autosave.
 
-`Mission Select` is already removed correctly at the native `MenuOptions.m_bHasMissionSaves` model layer. `New Game` has no equivalent visibility field in `MenuOptions`. V1.0U therefore attacks the next-earliest proven layer: the page constructor's exact `Page::bind("OnNewGameClicked", ...)` block is identified by resolving the RIP-relative binding name among the surrounding bindings and is skipped before Coherent receives it. Native action guards for both entries are intentionally kept as a second safety layer even after their visual entries are removed.
+`Mission Select` is already removed correctly at the native `MenuOptions.m_bHasMissionSaves` model layer. `New Game` has no equivalent visibility field in `MenuOptions`. V1.0U experimentally skipped the exact `Page::bind("OnNewGameClicked", ...)` block before Coherent, but that build crashed after Continue, so V1.0U1 disabled the pre-binding jump. The safe native `OnNewGameClicked` action guard remains active and the row is removed from the Coherent DOM. Video testing then exposed the exact remaining bug: native navigation still visits one invisible New Game slot between Continue and Options. V1.0V records the removed row's original geometry in an out-of-layout sentinel and proactively emits one extra navigation step when leaving the visible neighbors toward that ghost slot. The sentinel also lets the existing hidden-selection detector recognize a selection overlay at the removed row's old position.
 
 ### Multi Launch icon and white outline
 
@@ -180,7 +180,7 @@ V1.0U separates them at their native outputs:
 
 For compatibility, old INI files containing `HideObjectIndicators` are still accepted as the default value for both new options when `HideIcon` / `HideOutline` are absent.
 
-The F1 Show HUD override restores both native publication paths. V1.0U additionally hooks the verified HighlightComponent refresh callback and, when a recently active component is available, re-runs it once after F1 restores the outline path so the white outline can be republished immediately instead of waiting for a target change.
+The F1 Show HUD override restores both native publication paths. V1.0U briefly added a direct `HighlightComponent` refresh detour to force immediate outline republication, but that experimental detour was removed in the V1.0U1 crashfix together with the pre-Coherent New Game binding jump. V1.0U1 relies on the game's normal highlight refresh after restoring the publication paths.
 
 All timing values are in milliseconds.
 
@@ -205,9 +205,9 @@ The important current-build findings are:
 - V1.0D real-aim crosshair behavior validated;
 - Launch target reticle validated in V1.0L;
 - V1.0M post-update Multi Launch suppression and DOM center-dot search rejected;
-- validate V1.0U independent `HideIcon` / `HideOutline` paths and F1 republish behavior;
+- V1.0U1 in-game HUD test reported working; keep split `HideIcon` / `HideOutline` paths and validated center-dot mask frozen while menu work continues;
 - V1.0S+ center-pixel mask validated for the normal crosshair dot; keep this path frozen;
-- validate V1.0U pre-Coherent `OnNewGameClicked` binding suppression plus existing fallback cleanup;
+- validate V1.0V New Game navigation-ghost sentinel between Continue and Options;
 - validate the hardened Expedition forced-modifier behavior;
 - add configurable behavior for additional HUD elements where safe;
 - optional in-game configuration overlay later;
