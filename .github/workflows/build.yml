@@ -5,14 +5,19 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+
       - name: Build x64 plugin
         shell: pwsh
         run: ./build/build.ps1
+
       - name: Stage package
         shell: pwsh
         run: |
@@ -20,8 +25,33 @@ jobs:
           Copy-Item build-out/ControlDynamicHUD.dll dist/plugins/
           Copy-Item config/ControlDynamicHUD.ini dist/plugins/
           Copy-Item README.md dist/
-          Compress-Archive -Path dist/* -DestinationPath Control_Dynamic_HUD_V0.2_CI.zip -Force
+          Compress-Archive -Path dist/* -DestinationPath Control_Dynamic_HUD_CI.zip -Force
+
       - uses: actions/upload-artifact@v4
         with:
-          name: Control-Dynamic-HUD-V0.2
-          path: Control_Dynamic_HUD_V0.2_CI.zip
+          name: Control-Dynamic-HUD-CI
+          path: Control_Dynamic_HUD_CI.zip
+
+      - name: Publish v1.0.0 release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/release/v1.0.0'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          Copy-Item Control_Dynamic_HUD_CI.zip Control_Dynamic_HUD_v1.0.0.zip
+          $notes = @"
+          First public release of the configurable native Control Dynamic HUD rewrite.
+
+          Highlights:
+          - Dynamic health, mission log, crosshair and expedition HUD behavior
+          - Native Launch target-reticle suppression
+          - Independent Launch / Multi Launch icon and white-outline controls
+          - Validated normal-crosshair center-dot mask
+          - Global F1 Show HUD hotkey
+          - Optional New Game / Mission Select completed-save protection
+          - New Game navigation ghost fixed while preserving the normal menu image/video background
+          - Single x64 plugin for DX11 and DX12
+
+          Public release defaults keep HideNewGame=0 and HideMissionSelect=0.
+          "@
+          gh release create v1.0.0 Control_Dynamic_HUD_v1.0.0.zip --target "$env:GITHUB_SHA" --title "Control Dynamic HUD v1.0.0" --notes "$notes"
