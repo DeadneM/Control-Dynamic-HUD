@@ -54,6 +54,8 @@ typedef void (WINAPI *UpdateFn)(void*);
 typedef void (WINAPI *MultiLaunchUpdateFn)(void*,u32,void*,void*);
 typedef void (WINAPI *CrosshairUpdateFn)(void*,void*,void*);
 typedef void (WINAPI *HighlightRefreshFn)(void*);
+typedef void (WINAPI *MainMenuInputDispatchFn)(void*);
+typedef void (WINAPI *UiPageEventFn)(void*,u32,const char*);
 typedef void* (WINAPI *MenuFactoryFn)(void*);
 
 static HANDLE g_log = nullptr;
@@ -121,6 +123,11 @@ static MenuFactoryFn g_originalMenuFactory = nullptr;
 static ReadyFn g_originalMenuReady = nullptr;
 static uptr* g_menuReadyEntry = nullptr;
 static volatile u32 g_menuReadyCalls = 0;
+static MainMenuInputDispatchFn g_originalMainMenuInputDispatch = nullptr;
+static uptr* g_uiInputManagerSlot = nullptr;
+static UiPageEventFn g_uiPageEvent = nullptr;
+static int g_mainMenuNavPos = 0; // 0=Continue, 1=hidden New Game, 2=Options, 3=Credits, 4=Exit
+static bool g_mainMenuNavKnown = false;
 
 struct Config {
     bool enabled;
@@ -181,8 +188,8 @@ static const char kMainMenuScript[] = R"JS(
 (function(){
  var CFG=window.__CDH_MAINMENU_CONFIG||{hideNewGame:0,hideMissionSelect:0};
  if(!CFG.hideNewGame&&!CFG.hideMissionSelect)return;
- if(window.__ControlDynamicHUDMainMenu&&window.__ControlDynamicHUDMainMenu.version==='1.0U1')return;
- window.__ControlDynamicHUDMainMenu={version:'1.0U1'};
+ if(window.__ControlDynamicHUDMainMenu&&window.__ControlDynamicHUDMainMenu.version==='1.0X')return;
+ window.__ControlDynamicHUDMainMenu={version:'1.0X'};
 
  var style=document.getElementById('cdh-mainmenu-style');
  if(!style){style=document.createElement('style');style.id='cdh-mainmenu-style';(document.head||document.documentElement).appendChild(style);}
@@ -428,7 +435,7 @@ static const char kSuiteScript[] = R"JS(
   expeditionEnabled:1,expeditionHideDelayMs:2000,expeditionFadeDurationMs:300
  };
  var CDH=window.__ControlDynamicHUDSuite={
-  version:'1.0U1',health:false,mission:false,crosshair:false,expedition:false,
+  version:'1.0X',health:false,mission:false,crosshair:false,expedition:false,
   hudVisible:true,active:true,lastError:'',forceVisible:false
  };
  var MODE={COMBAT:0,ADVENTURING:1,STORY:2,ACTION:3,EXAMINE:4,HIDDEN:5};
@@ -1160,6 +1167,108 @@ static bool patch_ground_slam_target_circle(void* exe){
     g_VirtualProtect((void*)(lea+3),sizeof(s32),old,&dummy);
     if(g_FlushInstructionCache)g_FlushInstructionCache((HANDLE)(uptr)-1,(void*)lea,7);
     log_line("Ground Slam target circle disabled: slam_target_show redirected to slam_target_hide.");
+    return true;
+}
+
+// Native UIMainMenu input -> page event bridge.
+// The audited event table is:
+//   index 6 = OnNavigateUp
+//   index 7 = OnNavigateDown
+//   index 5 = OnNavigateRight
+//   index 4 = OnNavigateLeft
+//   index 0 = OnSelect
+//   index 1 = OnBack
+static const u8 kMainMenuInputDispatchPat[] = {
+0x48,0x89,0x5C,0x24,0x08,0x48,0x89,0x74,0x24,0x10,0x57,0x48,0x83,0xEC,0x20,
+0x48,0x8B,0xF9,0x48,0x8D,0x1D,0,0,0,0,0x48,0x8D,0x35,0,0,0,0};
+static const char kMainMenuInputDispatchMask[] = "xxxxxxxxxxxxxxxxxxxxxx????xxx????";
+
+static const char kNavUpName[]="OnNavigateUp";
+static const char kNavDownName[]="OnNavigateDown";
+
+static void WINAPI HookMainMenuInputDispatch(void* self){
+    bool up=false,down=false;
+    if(g_uiInputManagerSlot){
+        uptr mgr=rdptr(g_uiInputManagerSlot);
+        if(mgr){
+            up=rd8((void*)(mgr+0x26C+6))!=0;
+            down=rd8((void*)(mgr+0x26C+7))!=0;
+        }
+    }
+
+    int before=g_mainMenuNavPos;
+    if(g_originalMainMenuInputDispatch)g_originalMainMenuInputDispatch(self);
+
+    if(!g_cfg.mainMenuHideNewGame||!g_uiPageEvent||!self||!g_mainMenuNavKnown)return;
+    if(up==down)return;
+
+    bool extra=false;
+    const char* extraName=nullptr;
+
+    if(down){
+        if(g_mainMenuNavPos==0){
+            // Native one-step lands on the removed New Game slot.
+            extra=true;extraName=kNavDownName;g_mainMenuNavPos=2;
+        }else if(g_mainMenuNavPos==2)g_mainMenuNavPos=3;
+        else if(g_mainMenuNavPos==3)g_mainMenuNavPos=4;
+        else if(g_mainMenuNavPos==4)g_mainMenuNavPos=0;
+        else g_mainMenuNavKnown=false;
+    }else if(up){
+        if(g_mainMenuNavPos==2){
+            // Native one-step lands on the removed New Game slot.
+            extra=true;extraName=kNavUpName;g_mainMenuNavPos=0;
+        }else if(g_mainMenuNavPos==0)g_mainMenuNavPos=4;
+        else if(g_mainMenuNavPos==4)g_mainMenuNavPos=3;
+        else if(g_mainMenuNavPos==3)g_mainMenuNavPos=2;
+        else g_mainMenuNavKnown=false;
+    }
+
+    if(extra){
+        void* system=(void*)rdptr((u8*)self+0x10);
+        u32 pageIndex=rd32((u8*)self+0x18);
+        if(system){
+            g_uiPageEvent(system,pageIndex,extraName);
+            log_cstr("Native main-menu ghost skip: ");
+            log_cstr(extraName);
+            log_cstr(" pos ");log_dec((u32)before);
+            log_cstr(" -> ");log_dec((u32)g_mainMenuNavPos);
+            log_bytes("\r\n",2);
+        }
+    }
+}
+
+static bool install_main_menu_input_dispatch_hook(WinApi& api,void* exe){
+    if(!g_cfg.mainMenuHideNewGame)return true;
+    uptr hits[4]={0};u32 n=scan_masked_all(exe,kMainMenuInputDispatchPat,
+        kMainMenuInputDispatchMask,sizeof(kMainMenuInputDispatchPat),hits,4);
+    uptr p=n?hits[0]:0;
+    log_cstr("Main menu native input bridge matches: ");log_dec(n);
+    log_cstr(" first=");log_hex(p);log_bytes("\r\n",2);
+    if(n!=1||!p)return false;
+
+    // Resolve global UI input manager from:
+    // p+0x24: 48 8B 05 rel32
+    u8* inputMov=(u8*)(p+0x24);
+    if(inputMov[0]!=0x48||inputMov[1]!=0x8B||inputMov[2]!=0x05)return false;
+    s32 inputRel=*(s32*)(inputMov+3);
+    g_uiInputManagerSlot=(uptr*)(inputMov+7+(s64)inputRel);
+
+    // Resolve the imported page-event dispatcher from:
+    // p+0x3F: FF 15 rel32
+    u8* eventCall=(u8*)(p+0x3F);
+    if(eventCall[0]!=0xFF||eventCall[1]!=0x15)return false;
+    s32 eventRel=*(s32*)(eventCall+2);
+    uptr* eventSlot=(uptr*)(eventCall+6+(s64)eventRel);
+    g_uiPageEvent=(UiPageEventFn)rdptr(eventSlot);
+
+    log_cstr("UI input manager slot: ");log_hex((uptr)g_uiInputManagerSlot);
+    log_cstr(" page event dispatcher: ");log_hex((uptr)g_uiPageEvent);
+    log_bytes("\r\n",2);
+
+    if(!g_uiInputManagerSlot||!g_uiPageEvent)return false;
+    if(!install_code_detour(api,p,(void*)&HookMainMenuInputDispatch,
+                            (void**)&g_originalMainMenuInputDispatch,15))return false;
+    log_line("Native UIMainMenu input bridge hook installed.");
     return true;
 }
 
@@ -1903,6 +2012,11 @@ static void restore_menu_ready_hook(){
 static void WINAPI HookMenuReady(void* self){
     u32 n=++g_menuReadyCalls;
     if(g_originalMenuReady)g_originalMenuReady(self);
+    if(g_cfg.mainMenuHideNewGame){
+        g_mainMenuNavPos=0;
+        g_mainMenuNavKnown=true;
+        log_line("Native main-menu navigation model reset to Continue.");
+    }
     log_cstr("Main menu onReadyForBindings #");log_dec(n);log_bytes("\r\n",2);
     void* view=(self&&g_pageGetView)?g_pageGetView(self):nullptr;
     uptr vt=view?rdptr(view):0;
@@ -2077,7 +2191,7 @@ static bool install_hook(WinApi& api,uptr target){
     DWORD dummy=0;api.VirtualProtect((void*)target,stolen,old,&dummy);api.FlushInstructionCache((HANDLE)(uptr)-1,(void*)target,stolen);return true;
 }
 
-extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 121;}
+extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 124;}
 extern "C" __declspec(dllexport) void* CDH_RelocAnchor=(void*)&CDH_Version;
 
 extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
@@ -2089,7 +2203,7 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     load_config(api);g_showHudVk=parse_vk(g_cfg.showHudKey);build_config_script();
     g_WriteFile=api.WriteFile;g_log=api.CreateFileW(L"plugins\\ControlDynamicHUD.log",GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
     if(!g_log||(uptr)g_log==INVALID_HANDLE_VALUE_U)return 1;
-    log_line("Control Dynamic HUD V1.0U1 CRASHFIX TEST");log_line("Mode: safe split icon/outline patches + validated center-dot mask + stable menu guards");
+    log_line("Control Dynamic HUD V1.0X NATIVE MENU NAV TEST");log_line("Mode: U1 validated HUD frozen + native main-menu input bridge ghost skip");
     log_cstr("Config: Enabled=");log_dec(g_cfg.enabled?1:0);log_cstr(" ShowHUDKey=");log_cstr(g_cfg.showHudKey);log_cstr(" VK=");log_hex(g_showHudVk);log_cstr(" ShowHUDDurationMs=");log_dec(g_cfg.showHudDurationMs);
     log_cstr(" HideNewGame=");log_dec(g_cfg.mainMenuHideNewGame?1:0);
     log_cstr(" HideMissionSelect=");log_dec(g_cfg.mainMenuHideMissionSelect?1:0);
@@ -2100,14 +2214,17 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     log_cstr("Executable: ");log_wide(first_module_name());log_bytes("\r\n",2);void* exe=first_module_base();log_cstr("Executable base: ");log_hex((uptr)exe);log_bytes("\r\n",2);
     patch_ground_slam_target_circle(exe);
     patch_main_menu_actions(exe);
-    if(g_cfg.mainMenuHideNewGame)
-        log_line("V1.0U1 crashfix: pre-Coherent New Game binding skip disabled; native action guard + DOM fallback only.");
+    if(g_cfg.mainMenuHideNewGame){
+        log_line("V1.0X keeps the stable New Game action guard + DOM row removal and adds a native input-bridge ghost skip.");
+        if(!install_main_menu_input_dispatch_hook(api,exe))
+            log_line("Native main-menu input bridge hook not installed; New Game ghost-skip feature fails open.");
+    }
     log_line("V1.0Q Target Indicator path rejected by in-game test; native option override disabled.");
     if(g_cfg.mainMenuHideMissionSelect&&!patch_mission_select_menu_model(exe))
         log_line("Mission Select MenuOptions suppression not installed; DOM fallback remains active.");
     if(g_cfg.mainMenuHideNewGame)
-        log_line("New Game has no MenuOptions visibility flag; V1.0U1 disables the experimental pre-Coherent binding skip after the Continue crash and keeps native action guard + DOM fallback.");
-    log_line("V1.0U1 crashfix keeps the split icon/outline instruction patches but removes both experimental control-flow detours from V1.0U.");
+        log_line("New Game has no MenuOptions visibility flag; V1.0X keeps native action guard + DOM removal and skips the hidden navigation index in the native UIMainMenu input bridge.");
+    log_line("V1.0X keeps the validated U1 HUD paths frozen; only native main-menu navigation handling is new.");
     if(g_cfg.multiLaunchHideIcon||g_cfg.multiLaunchHideOutline){
         if(locate_split_launch_highlights(exe)){
             if(g_cfg.multiLaunchHideOutline)
@@ -2118,7 +2235,7 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
             log_line("Split Launch highlight signatures unavailable; affected feature fails open.");
         }
     }
-    log_line("CrosshairDot V1.0U1 keeps the validated V1.0S center mask unchanged.");
+    log_line("CrosshairDot V1.0X keeps the validated V1.0S center mask unchanged; HUD paths otherwise identical to validated U1.");
     void* coh=find_module("coherentuigt.dll");g_coherentBase=coh;log_cstr("CoherentUIGT.dll: ");if(coh){log_hex((uptr)coh);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
     void* ui=find_module("ui_rmdwin10_f.dll");log_cstr("ui_rmdwin10_f.dll: ");if(ui){log_hex((uptr)ui);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
     const char* pageGetViewName="?getView@Page@ui@@QEAAPEAVView@UIGT@Coherent@@XZ";
