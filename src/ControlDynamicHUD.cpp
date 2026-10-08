@@ -126,6 +126,8 @@ static volatile u32 g_menuReadyCalls = 0;
 static MainMenuInputDispatchFn g_originalMainMenuInputDispatch = nullptr;
 static uptr* g_uiInputManagerSlot = nullptr;
 static UiPageEventFn g_uiPageEvent = nullptr;
+static uptr g_mainMenuEventTable = 0; // points at first event-name pointer; signed action index lives at -8
+static volatile u32 g_mainMenuInputCalls = 0;
 static int g_mainMenuNavPos = 0; // 0=Continue, 1=hidden New Game, 2=Options, 3=Credits, 4=Exit
 static bool g_mainMenuNavKnown = false;
 
@@ -188,8 +190,8 @@ static const char kMainMenuScript[] = R"JS(
 (function(){
  var CFG=window.__CDH_MAINMENU_CONFIG||{hideNewGame:0,hideMissionSelect:0};
  if(!CFG.hideNewGame&&!CFG.hideMissionSelect)return;
- if(window.__ControlDynamicHUDMainMenu&&window.__ControlDynamicHUDMainMenu.version==='1.0X')return;
- window.__ControlDynamicHUDMainMenu={version:'1.0X'};
+ if(window.__ControlDynamicHUDMainMenu&&window.__ControlDynamicHUDMainMenu.version==='1.0X2')return;
+ window.__ControlDynamicHUDMainMenu={version:'1.0X2'};
 
  var style=document.getElementById('cdh-mainmenu-style');
  if(!style){style=document.createElement('style');style.id='cdh-mainmenu-style';(document.head||document.documentElement).appendChild(style);}
@@ -435,7 +437,7 @@ static const char kSuiteScript[] = R"JS(
   expeditionEnabled:1,expeditionHideDelayMs:2000,expeditionFadeDurationMs:300
  };
  var CDH=window.__ControlDynamicHUDSuite={
-  version:'1.0X',health:false,mission:false,crosshair:false,expedition:false,
+  version:'1.0X2',health:false,mission:false,crosshair:false,expedition:false,
   hudVisible:true,active:true,lastError:'',forceVisible:false
  };
  var MODE={COMBAT:0,ADVENTURING:1,STORY:2,ACTION:3,EXAMINE:4,HIDDEN:5};
@@ -1190,51 +1192,70 @@ static const char kNavUpName[]="OnNavigateUp";
 static const char kNavDownName[]="OnNavigateDown";
 
 static void WINAPI HookMainMenuInputDispatch(void* self){
-    bool up=false,down=false;
-    if(g_uiInputManagerSlot){
-        uptr mgr=rdptr(g_uiInputManagerSlot);
+    u32 callNo=++g_mainMenuInputCalls;
+    uptr mgr=g_uiInputManagerSlot?rdptr(g_uiInputManagerSlot):0;
+    void* system=self?(void*)rdptr((u8*)self+0x10):nullptr;
+    u32 pageIndex=self?rd32((u8*)self+0x18):0xFFFFFFFFu;
+
+    if(callNo<=3){
+        log_cstr("Native menu input bridge call #");log_dec(callNo);
+        log_cstr(" self=");log_hex((uptr)self);
+        log_cstr(" system=");log_hex((uptr)system);
+        log_cstr(" pageIndex=");log_dec(pageIndex);
+        log_cstr(" manager=");log_hex(mgr);
         if(mgr){
-            up=rd8((void*)(mgr+0x26C+6))!=0;
-            down=rd8((void*)(mgr+0x26C+7))!=0;
+            log_cstr(" flags[0..7]=");
+            for(int k=0;k<8;++k){log_dec(rd8((void*)(mgr+0x26C+k)));if(k!=7)log_cstr(",");}
         }
+        log_bytes("\r\n",2);
     }
 
-    int before=g_mainMenuNavPos;
-    if(g_originalMainMenuInputDispatch)g_originalMainMenuInputDispatch(self);
-
-    if(!g_cfg.mainMenuHideNewGame||!g_uiPageEvent||!self||!g_mainMenuNavKnown)return;
-    if(up==down)return;
-
-    bool extra=false;
-    const char* extraName=nullptr;
-
-    if(down){
-        if(g_mainMenuNavPos==0){
-            // Native one-step lands on the removed New Game slot.
-            extra=true;extraName=kNavDownName;g_mainMenuNavPos=2;
-        }else if(g_mainMenuNavPos==2)g_mainMenuNavPos=3;
-        else if(g_mainMenuNavPos==3)g_mainMenuNavPos=4;
-        else if(g_mainMenuNavPos==4)g_mainMenuNavPos=0;
-        else g_mainMenuNavKnown=false;
-    }else if(up){
-        if(g_mainMenuNavPos==2){
-            // Native one-step lands on the removed New Game slot.
-            extra=true;extraName=kNavUpName;g_mainMenuNavPos=0;
-        }else if(g_mainMenuNavPos==0)g_mainMenuNavPos=4;
-        else if(g_mainMenuNavPos==4)g_mainMenuNavPos=3;
-        else if(g_mainMenuNavPos==3)g_mainMenuNavPos=2;
-        else g_mainMenuNavKnown=false;
+    // Reproduce the audited vanilla loop exactly instead of calling the trampoline:
+    // each table entry contains signed action index at -8 and event-name pointer at +0.
+    // This function has no other side effects in the current executable.
+    if(!self||!system||!mgr||!g_uiPageEvent||!g_mainMenuEventTable){
+        if(g_originalMainMenuInputDispatch)g_originalMainMenuInputDispatch(self);
+        return;
     }
 
-    if(extra){
-        void* system=(void*)rdptr((u8*)self+0x10);
-        u32 pageIndex=rd32((u8*)self+0x18);
-        if(system){
-            g_uiPageEvent(system,pageIndex,extraName);
-            log_cstr("Native main-menu ghost skip: ");
-            log_cstr(extraName);
-            log_cstr(" pos ");log_dec((u32)before);
-            log_cstr(" -> ");log_dec((u32)g_mainMenuNavPos);
+    for(int i=0;i<6;++i){
+        uptr entry=g_mainMenuEventTable+(uptr)i*0x10;
+        s32 actionIndex=*(s32*)(entry-8);
+        const char* eventName=(const char*)rdptr((void*)entry);
+        if(actionIndex<0||actionIndex>0x100||!eventName)continue;
+        bool active=rd8((void*)(mgr+0x26C+(uptr)actionIndex))!=0;
+        if(!active)continue;
+
+        log_cstr("Native menu action active: idx=");log_dec((u32)actionIndex);
+        log_cstr(" event=");log_cstr(eventName);
+        log_cstr(" trackedPos=");log_dec((u32)(g_mainMenuNavPos<0?0:g_mainMenuNavPos));
+        log_cstr(" known=");log_dec(g_mainMenuNavKnown?1:0);
+        log_bytes("\r\n",2);
+
+        g_uiPageEvent(system,pageIndex,eventName);
+
+        if(!g_cfg.mainMenuHideNewGame||!g_mainMenuNavKnown)continue;
+
+        bool extra=false;
+        if(actionIndex==7){ // Down
+            if(g_mainMenuNavPos==0){extra=true;g_mainMenuNavPos=2;}
+            else if(g_mainMenuNavPos==2)g_mainMenuNavPos=3;
+            else if(g_mainMenuNavPos==3)g_mainMenuNavPos=4;
+            else if(g_mainMenuNavPos==4)g_mainMenuNavPos=0;
+            else g_mainMenuNavKnown=false;
+        }else if(actionIndex==6){ // Up
+            if(g_mainMenuNavPos==2){extra=true;g_mainMenuNavPos=0;}
+            else if(g_mainMenuNavPos==0)g_mainMenuNavPos=4;
+            else if(g_mainMenuNavPos==4)g_mainMenuNavPos=3;
+            else if(g_mainMenuNavPos==3)g_mainMenuNavPos=2;
+            else g_mainMenuNavKnown=false;
+        }
+
+        if(extra){
+            g_uiPageEvent(system,pageIndex,eventName);
+            log_cstr("Native main-menu ghost skip dispatched second ");
+            log_cstr(eventName);
+            log_cstr(" -> trackedPos=");log_dec((u32)g_mainMenuNavPos);
             log_bytes("\r\n",2);
         }
     }
@@ -1248,6 +1269,29 @@ static bool install_main_menu_input_dispatch_hook(WinApi& api,void* exe){
     log_cstr("Main menu native input bridge matches: ");log_dec(n);
     log_cstr(" first=");log_hex(p);log_bytes("\r\n",2);
     if(n!=1||!p)return false;
+
+    // Resolve the exact six-entry event table from:
+    // p+0x12: 48 8D 1D rel32 -> first event-name pointer field.
+    u8* tableLea=(u8*)(p+0x12);
+    if(tableLea[0]!=0x48||tableLea[1]!=0x8D||tableLea[2]!=0x1D)return false;
+    s32 tableRel=*(s32*)(tableLea+3);
+    g_mainMenuEventTable=(uptr)(tableLea+7+(s64)tableRel);
+
+    // Validate the audited action-index order before installing a replacement loop.
+    static const s32 expectedIdx[6]={6,7,5,4,0,1};
+    static const char* expectedName[6]={"OnNavigateUp","OnNavigateDown","OnNavigateRight","OnNavigateLeft","OnSelect","OnBack"};
+    for(int i=0;i<6;++i){
+        uptr entry=g_mainMenuEventTable+(uptr)i*0x10;
+        s32 idx=*(s32*)(entry-8);
+        const char* name=(const char*)rdptr((void*)entry);
+        if(idx!=expectedIdx[i]||!cstr_eq_exact(name,expectedName[i])){
+            log_cstr("Native menu event table validation failed at ");log_dec((u32)i);
+            log_bytes("\r\n",2);
+            g_mainMenuEventTable=0;
+            return false;
+        }
+    }
+    log_cstr("Native menu event table verified: ");log_hex(g_mainMenuEventTable);log_bytes("\r\n",2);
 
     // Resolve global UI input manager from:
     // p+0x24: 48 8B 05 rel32
@@ -2194,7 +2238,7 @@ static bool install_hook(WinApi& api,uptr target){
     DWORD dummy=0;api.VirtualProtect((void*)target,stolen,old,&dummy);api.FlushInstructionCache((HANDLE)(uptr)-1,(void*)target,stolen);return true;
 }
 
-extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 124;}
+extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 125;}
 extern "C" __declspec(dllexport) void* CDH_RelocAnchor=(void*)&CDH_Version;
 
 extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
@@ -2206,7 +2250,7 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     load_config(api);g_showHudVk=parse_vk(g_cfg.showHudKey);build_config_script();
     g_WriteFile=api.WriteFile;g_log=api.CreateFileW(L"plugins\\ControlDynamicHUD.log",GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
     if(!g_log||(uptr)g_log==INVALID_HANDLE_VALUE_U)return 1;
-    log_line("Control Dynamic HUD V1.0X1 NATIVE MENU NAV TEST");log_line("Mode: U1 validated HUD frozen + native main-menu input bridge ghost skip");
+    log_line("Control Dynamic HUD V1.0X2 NATIVE MENU NAV TRACE TEST");log_line("Mode: U1 validated HUD frozen + native main-menu input bridge ghost skip");
     log_cstr("Config: Enabled=");log_dec(g_cfg.enabled?1:0);log_cstr(" ShowHUDKey=");log_cstr(g_cfg.showHudKey);log_cstr(" VK=");log_hex(g_showHudVk);log_cstr(" ShowHUDDurationMs=");log_dec(g_cfg.showHudDurationMs);
     log_cstr(" HideNewGame=");log_dec(g_cfg.mainMenuHideNewGame?1:0);
     log_cstr(" HideMissionSelect=");log_dec(g_cfg.mainMenuHideMissionSelect?1:0);
@@ -2218,7 +2262,7 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     patch_ground_slam_target_circle(exe);
     patch_main_menu_actions(exe);
     if(g_cfg.mainMenuHideNewGame){
-        log_line("V1.0X1 fixes the native input-bridge signature mask; offline validation on the current Control_DX12.exe resolves exactly one UIMainMenu bridge.");
+        log_line("V1.0X2 replaces the verified UIMainMenu bridge with an audited six-event loop and logs the first calls plus every active native menu action.");
         if(!install_main_menu_input_dispatch_hook(api,exe))
             log_line("Native main-menu input bridge hook not installed; New Game ghost-skip feature fails open.");
     }
@@ -2226,8 +2270,8 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     if(g_cfg.mainMenuHideMissionSelect&&!patch_mission_select_menu_model(exe))
         log_line("Mission Select MenuOptions suppression not installed; DOM fallback remains active.");
     if(g_cfg.mainMenuHideNewGame)
-        log_line("New Game has no MenuOptions visibility flag; V1.0X1 keeps native action guard + DOM removal and skips the hidden navigation index in the verified native UIMainMenu input bridge.");
-    log_line("V1.0X1 keeps the validated U1 HUD paths frozen; only the verified native main-menu navigation hook is active.");
+        log_line("New Game has no MenuOptions visibility flag; V1.0X2 keeps native action guard + DOM removal and handles the hidden index inside a faithful replacement of the verified UIMainMenu event loop.");
+    log_line("V1.0X2 keeps the validated U1 HUD paths frozen; only native main-menu bridge tracing/ghost handling is new.");
     if(g_cfg.multiLaunchHideIcon||g_cfg.multiLaunchHideOutline){
         if(locate_split_launch_highlights(exe)){
             if(g_cfg.multiLaunchHideOutline)
@@ -2238,7 +2282,7 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
             log_line("Split Launch highlight signatures unavailable; affected feature fails open.");
         }
     }
-    log_line("CrosshairDot V1.0X1 keeps the validated V1.0S center mask unchanged; HUD paths otherwise identical to validated U1.");
+    log_line("CrosshairDot V1.0X2 keeps the validated V1.0S center mask unchanged; HUD paths otherwise identical to validated U1.");
     void* coh=find_module("coherentuigt.dll");g_coherentBase=coh;log_cstr("CoherentUIGT.dll: ");if(coh){log_hex((uptr)coh);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
     void* ui=find_module("ui_rmdwin10_f.dll");log_cstr("ui_rmdwin10_f.dll: ");if(ui){log_hex((uptr)ui);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
     const char* pageGetViewName="?getView@Page@ui@@QEAAPEAVView@UIGT@Coherent@@XZ";
