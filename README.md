@@ -15,11 +15,11 @@ V0.9 fixed the core lifecycle problems:
 - persistent slot-28 lifecycle hook survives pause/menu page recreation;
 - no legacy per-frame reinjection storm.
 
-### V1.0U split Launch highlight test candidate
+### V1.0W Coherent navigation-ghost test candidate
 
-Branch: `test/v1.0u-split-highlight`
+Branch: `test/v1.0w-coherent-nav`
 
-V1.0U keeps the validated V1.0S center-dot mask unchanged. V1.0T confirmed that reg2k's NoHighlight engine-level Launch path is the correct family of code, but its broad branch skip removes both the object-attached icon and the white world outline together. V1.0U splits those outputs: `LaunchIndicator.m_bHighlightVisible` controls the icon, while `HighlightComponentState.m_out_pRenderObject` controls the white outline. Each can now be disabled independently. For the main-menu save-protection path, V1.0U also identifies and skips only the exact `Page::bind("OnNewGameClicked", ...)` block before Coherent binding, while retaining the native action guard and DOM cleanup as safety fallbacks.
+V1.0W is based on the validated V1.0U1 HUD behavior. The center-dot mask, split Multi Launch icon/outline patches, and crashfix remain unchanged. V1.0V proved that the remaining New Game problem is not a visual gap but a navigation slot that still exists after the row is removed. V1.0W therefore moves the fix to Coherent's real navigation event channel: the menu script wraps JavaScript handlers registered through `engine.on("OnNavigateUp"/"OnNavigateDown")` and executes the matching handler twice only when leaving the visible neighbor toward the removed New Game slot. The old synthetic DOM keyboard event is retained only as a fallback.
 
 Currently configurable:
 
@@ -161,7 +161,7 @@ HideMissionSelect=0
 
 These options are not only cosmetic. Their purpose is to **protect a completed-game autosave**. After the story is finished, returning through Mission Select can move progression back to an earlier mission and subsequent autosaves can replace the completed-state save. Starting New Game can replace/delete the active completed-game save path entirely. The intended protected workflow is therefore: once the game is completed, continue playing only from the completed-state autosave.
 
-`Mission Select` is already removed correctly at the native `MenuOptions.m_bHasMissionSaves` model layer. `New Game` has no equivalent visibility field in `MenuOptions`. V1.0U therefore attacks the next-earliest proven layer: the page constructor's exact `Page::bind("OnNewGameClicked", ...)` block is identified by resolving the RIP-relative binding name among the surrounding bindings and is skipped before Coherent receives it. Native action guards for both entries are intentionally kept as a second safety layer even after their visual entries are removed.
+`Mission Select` is already removed correctly at the native `MenuOptions.m_bHasMissionSaves` model layer. `New Game` has no equivalent visibility field in `MenuOptions`. The V1.0U pre-Coherent binding skip was removed after it caused a crash when Continue was used. V1.0U1 restored stable loading, and video testing then showed the exact residual bug: the visual list is compact (`Continue -> Options -> Credits -> Exit`), but native navigation still visits one invisible New Game index between Continue and Options. V1.0V tried to skip that slot with synthetic DOM keyboard events and had no effect. V1.0W instead wraps Coherent's actual `OnNavigateUp` / `OnNavigateDown` JavaScript event handlers and doubles only the transition that crosses the removed New Game index. Native New Game and Mission Select action guards remain enabled as the save-protection safety layer.
 
 ### Multi Launch icon and white outline
 
@@ -205,9 +205,9 @@ The important current-build findings are:
 - V1.0D real-aim crosshair behavior validated;
 - Launch target reticle validated in V1.0L;
 - V1.0M post-update Multi Launch suppression and DOM center-dot search rejected;
-- validate V1.0U independent `HideIcon` / `HideOutline` paths and F1 republish behavior;
+- V1.0U1 HUD behavior reported working in-game; keep dot and split Multi Launch paths frozen while menu work continues;
 - V1.0S+ center-pixel mask validated for the normal crosshair dot; keep this path frozen;
-- validate V1.0U pre-Coherent `OnNewGameClicked` binding suppression plus existing fallback cleanup;
+- validate V1.0W Coherent `OnNavigateUp` / `OnNavigateDown` ghost-slot skip between Continue and Options;
 - validate the hardened Expedition forced-modifier behavior;
 - add configurable behavior for additional HUD elements where safe;
 - optional in-game configuration overlay later;
