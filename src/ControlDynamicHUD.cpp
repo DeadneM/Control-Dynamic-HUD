@@ -181,12 +181,13 @@ static const char kMainMenuScript[] = R"JS(
 (function(){
  var CFG=window.__CDH_MAINMENU_CONFIG||{hideNewGame:0,hideMissionSelect:0};
  if(!CFG.hideNewGame&&!CFG.hideMissionSelect)return;
- if(window.__ControlDynamicHUDMainMenu&&window.__ControlDynamicHUDMainMenu.version==='1.0U1')return;
- window.__ControlDynamicHUDMainMenu={version:'1.0U1'};
+ if(window.__ControlDynamicHUDMainMenu&&window.__ControlDynamicHUDMainMenu.version==='1.0V')return;
+ window.__ControlDynamicHUDMainMenu={version:'1.0V'};
 
  var style=document.getElementById('cdh-mainmenu-style');
  if(!style){style=document.createElement('style');style.id='cdh-mainmenu-style';(document.head||document.documentElement).appendChild(style);}
  style.textContent='[data-cdh-mainmenu-hidden="1"]{display:none!important;height:0!important;min-height:0!important;max-height:0!important;margin:0!important;padding:0!important;border:0!important;overflow:hidden!important;opacity:0!important;pointer-events:none!important;}';
+ var ghost={sentinel:null,above:null,below:null};
 
  function norm(s){
   return String(s||'').toLowerCase()
@@ -265,32 +266,60 @@ static const char kMainMenuScript[] = R"JS(
   }
   return best;
  }
+ function installGhostSentinel(rr,above,below){
+  if(!rr||rr.width<1||rr.height<1)return;
+  ghost.above=above||ghost.above;
+  ghost.below=below||ghost.below;
+  if(ghost.sentinel&&ghost.sentinel.parentNode){
+   try{ghost.sentinel.parentNode.removeChild(ghost.sentinel);}catch(x){}
+  }
+  var g=document.createElement('div');
+  g.setAttribute('data-cdh-mainmenu-sentinel','1');
+  g.setAttribute('aria-hidden','true');
+  g.style.position='fixed';
+  g.style.left=rr.left+'px';g.style.top=rr.top+'px';
+  g.style.width=rr.width+'px';g.style.height=rr.height+'px';
+  g.style.margin='0';g.style.padding='0';g.style.border='0';
+  g.style.opacity='0';g.style.visibility='hidden';
+  g.style.pointerEvents='none';g.style.overflow='hidden';
+  g.style.zIndex='-2147483647';
+  (document.body||document.documentElement).appendChild(g);
+  ghost.sentinel=g;
+ }
  function removeNewGameBranch(row){
   if(!row||!row.parentNode)return;
-  var parent=row.parentNode,rr=null,below=[];
+  var parent=row.parentNode,rr=null,above=null,below=null,aboveTop=-1e9,belowTop=1e9,belowRows=[];
   try{rr=row.getBoundingClientRect();}catch(x){}
   if(rr&&parent.children){
    for(var i=0;i<parent.children.length;i++){
     var c=parent.children[i];if(c===row)continue;
     try{
      var cr=c.getBoundingClientRect();
-     if(cr.top>rr.top+1)below.push({el:c,top:cr.top});
+     if(cr.width<1||cr.height<1)continue;
+     if(cr.top<rr.top-1&&cr.top>aboveTop){above=c;aboveTop=cr.top;}
+     if(cr.top>rr.top+1&&cr.top<belowTop){below=c;belowTop=cr.top;}
+     if(cr.top>rr.top+1)belowRows.push({el:c,top:cr.top});
     }catch(x2){}
    }
-   below.sort(function(a,b){return a.top-b.top;});
+   belowRows.sort(function(x,y){return x.top-y.top;});
   }
-  var pitch=(rr&&below.length)?(below[0].top-rr.top):0;
+
+  // Keep an out-of-layout geometry sentinel at New Game's original position.
+  // The native menu still owns this navigation index even after the DOM row is removed.
+  installGhostSentinel(rr,above,below);
+
+  var pitch=(rr&&belowRows.length)?(belowRows[0].top-rr.top):0;
   try{parent.removeChild(row);}catch(x3){return;}
 
   // Normal-flow menus compact automatically. If Control keeps absolute/fixed item slots,
   // move the remaining lower siblings up by one measured menu pitch.
-  if(pitch>2&&pitch<240&&below.length){
+  if(pitch>2&&pitch<240&&belowRows.length){
    setTimeout(function(){
-    var first=below[0].el;if(!first||!first.isConnected)return;
+    var first=belowRows[0].el;if(!first||!first.isConnected)return;
     var fr;try{fr=first.getBoundingClientRect();}catch(x4){return;}
-    if(Math.abs(fr.top-below[0].top)>1.5)return;
-    for(var j=0;j<below.length;j++){
-     var e=below[j].el;if(!e||!e.isConnected)continue;
+    if(Math.abs(fr.top-belowRows[0].top)>1.5)return;
+    for(var j=0;j<belowRows.length;j++){
+     var e=belowRows[j].el;if(!e||!e.isConnected)continue;
      var cs;try{cs=window.getComputedStyle(e);}catch(x5){cs=null;}
      if(cs&&(cs.position==='absolute'||cs.position==='fixed')){
       var top=parseFloat(cs.top);
@@ -351,7 +380,7 @@ static const char kMainMenuScript[] = R"JS(
   return false;
  }
  function hiddenSelected(){
-  var rows=document.querySelectorAll('[data-cdh-mainmenu-hidden="1"]');
+  var rows=document.querySelectorAll('[data-cdh-mainmenu-hidden="1"],[data-cdh-mainmenu-sentinel="1"]');
   for(var i=0;i<rows.length;i++){
    var row=rows[i];
    if(looksSelected(row))return true;
@@ -373,6 +402,10 @@ static const char kMainMenuScript[] = R"JS(
   return false;
  }
  var lastDir=1,synthetic=false,skipQueued=false;
+ function selectedGhostNeighbor(dir){
+  var e=dir>0?ghost.above:ghost.below;
+  return !!(e&&e.isConnected&&looksSelected(e));
+ }
  function sendNav(dir){
   if(synthetic)return;
   synthetic=true;
@@ -396,9 +429,21 @@ static const char kMainMenuScript[] = R"JS(
  function queueSkip(){if(skipQueued)return;skipQueued=true;setTimeout(skipIfNeeded,0);setTimeout(function(){if(hiddenSelected())sendNav(lastDir);},24);}
  document.addEventListener('keydown',function(e){
   if(synthetic)return;
-  var k=String(e.key||'').toLowerCase(),c=e.keyCode||e.which||0;
-  if(k==='arrowdown'||k==='s'||c===40){lastDir=1;setTimeout(queueSkip,0);}
-  else if(k==='arrowup'||k==='w'||c===38){lastDir=-1;setTimeout(queueSkip,0);}
+  var k=String(e.key||'').toLowerCase(),c=e.keyCode||e.which||0,dir=0;
+  if(k==='arrowdown'||k==='s'||c===40)dir=1;
+  else if(k==='arrowup'||k==='w'||c===38)dir=-1;
+  if(!dir)return;
+  lastDir=dir;
+
+  // Video-confirmed case: native navigation still has the removed New Game index
+  // between the visible row above and below it. If the user leaves either neighbor
+  // toward that ghost slot, emit one extra move after the game's own key handling.
+  if(selectedGhostNeighbor(dir)){
+   setTimeout(function(){sendNav(dir);},0);
+   setTimeout(queueSkip,18);
+  }else{
+   setTimeout(queueSkip,0);
+  }
  },true);
 
  hideTargets();
@@ -428,7 +473,7 @@ static const char kSuiteScript[] = R"JS(
   expeditionEnabled:1,expeditionHideDelayMs:2000,expeditionFadeDurationMs:300
  };
  var CDH=window.__ControlDynamicHUDSuite={
-  version:'1.0U1',health:false,mission:false,crosshair:false,expedition:false,
+  version:'1.0V',health:false,mission:false,crosshair:false,expedition:false,
   hudVisible:true,active:true,lastError:'',forceVisible:false
  };
  var MODE={COMBAT:0,ADVENTURING:1,STORY:2,ACTION:3,EXAMINE:4,HIDDEN:5};
@@ -2077,7 +2122,7 @@ static bool install_hook(WinApi& api,uptr target){
     DWORD dummy=0;api.VirtualProtect((void*)target,stolen,old,&dummy);api.FlushInstructionCache((HANDLE)(uptr)-1,(void*)target,stolen);return true;
 }
 
-extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 121;}
+extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 122;}
 extern "C" __declspec(dllexport) void* CDH_RelocAnchor=(void*)&CDH_Version;
 
 extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
@@ -2089,7 +2134,7 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     load_config(api);g_showHudVk=parse_vk(g_cfg.showHudKey);build_config_script();
     g_WriteFile=api.WriteFile;g_log=api.CreateFileW(L"plugins\\ControlDynamicHUD.log",GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
     if(!g_log||(uptr)g_log==INVALID_HANDLE_VALUE_U)return 1;
-    log_line("Control Dynamic HUD V1.0U1 CRASHFIX TEST");log_line("Mode: safe split icon/outline patches + validated center-dot mask + stable menu guards");
+    log_line("Control Dynamic HUD V1.0V MENU GHOST TEST");log_line("Mode: U1 validated HUD frozen + New Game navigation-ghost sentinel");
     log_cstr("Config: Enabled=");log_dec(g_cfg.enabled?1:0);log_cstr(" ShowHUDKey=");log_cstr(g_cfg.showHudKey);log_cstr(" VK=");log_hex(g_showHudVk);log_cstr(" ShowHUDDurationMs=");log_dec(g_cfg.showHudDurationMs);
     log_cstr(" HideNewGame=");log_dec(g_cfg.mainMenuHideNewGame?1:0);
     log_cstr(" HideMissionSelect=");log_dec(g_cfg.mainMenuHideMissionSelect?1:0);
@@ -2106,7 +2151,7 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     if(g_cfg.mainMenuHideMissionSelect&&!patch_mission_select_menu_model(exe))
         log_line("Mission Select MenuOptions suppression not installed; DOM fallback remains active.");
     if(g_cfg.mainMenuHideNewGame)
-        log_line("New Game has no MenuOptions visibility flag; V1.0U1 disables the experimental pre-Coherent binding skip after the Continue crash and keeps native action guard + DOM fallback.");
+        log_line("New Game has no MenuOptions visibility flag; V1.0V keeps the safe action guard and uses a geometry sentinel to skip the native navigation ghost after DOM removal.");
     log_line("V1.0U1 crashfix keeps the split icon/outline instruction patches but removes both experimental control-flow detours from V1.0U.");
     if(g_cfg.multiLaunchHideIcon||g_cfg.multiLaunchHideOutline){
         if(locate_split_launch_highlights(exe)){
@@ -2118,7 +2163,7 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
             log_line("Split Launch highlight signatures unavailable; affected feature fails open.");
         }
     }
-    log_line("CrosshairDot V1.0U1 keeps the validated V1.0S center mask unchanged.");
+    log_line("CrosshairDot V1.0V keeps the validated V1.0S center mask unchanged; HUD paths otherwise identical to validated U1.");
     void* coh=find_module("coherentuigt.dll");g_coherentBase=coh;log_cstr("CoherentUIGT.dll: ");if(coh){log_hex((uptr)coh);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
     void* ui=find_module("ui_rmdwin10_f.dll");log_cstr("ui_rmdwin10_f.dll: ");if(ui){log_hex((uptr)ui);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
     const char* pageGetViewName="?getView@Page@ui@@QEAAPEAVView@UIGT@Coherent@@XZ";
