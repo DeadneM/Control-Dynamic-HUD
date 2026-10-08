@@ -4,40 +4,23 @@ A modern dynamic-HUD plugin for **Control** (PC), rebuilt as a native x64 plugin
 
 ## Current status
 
-### Canonical stable base: V0.9
+### v1.0.0
 
-V0.9 fixed the core lifecycle problems:
+The configurable native rewrite is now the canonical release.
 
-- current Control HUD factory identified safely by signature;
-- current `ui::Page::onReadyForBindings` ABI corrected to **vtable slot 28**;
-- public Coherent `UIGTView` wrapper identified correctly;
-- `ExecuteScript` resolved from the public View's **vtable slot 61**;
-- persistent slot-28 lifecycle hook survives pause/menu page recreation;
-- no legacy per-frame reinjection storm.
+Validated highlights:
 
-### V1.0Z Page::bind-window navigation test candidate
+- dynamic health, mission log, crosshair and expedition HUD behavior;
+- persistent HUD lifecycle across pause/menu recreation;
+- native Launch target-reticle suppression;
+- independent Launch / Multi Launch object icon and white-outline controls;
+- validated normal-crosshair center-dot mask;
+- global **Show HUD** hotkey on **F1**;
+- optional completed-save protection for **New Game** and **Mission Select**;
+- New Game navigation ghost removed without breaking the normal menu image/video background;
+- DX11 and DX12 use the same plugin binary.
 
-Branch: `test/v1.0z-bindwindow`
-
-V1.0Z is based on the validated V1.0Y navigation behavior and the stable V1.0U1 HUD behavior. The center-dot mask and split Multi Launch icon/outline paths remain frozen. V1.0Y proved that the Coherent `engine.on("OnNavigateUp"/"OnNavigateDown")` wrapper must exist before Control registers its real navigation handlers, but injecting JavaScript before the entire native `onReadyForBindings` removed the menu background image/video. V1.0Z moves the same wrapper into the **first native `ui::Page::bind` call inside `onReadyForBindings`**. This occurs after the page/base/model setup has run but before callback registration completes, aiming to preserve both the validated ghost-slot skip and the normal menu background lifecycle.
-
-Currently configurable:
-
-- Health bar
-- Mission log
-- Crosshair
-- Expedition forced-modifier panel
-- Ground Slam targeting circle
-- Multi Launch held-object input prompts (experimental)
-- global **Show HUD** hotkey
-
-Every timed HUD element has its own configurable hide delay. CSS-managed elements can also expose a fade duration; native model-level suppressions use their own game model timing path instead of a synthetic CSS fade.
-
-The default Show HUD key is **F1**. The hotkey is detected natively from the HUD update path, so it does not depend on Coherent receiving function-key keyboard events. Pressing it forces every HUD element managed by the mod visible for a configurable duration, then each element resumes its normal independent timer.
-
-The crosshair is now driven by Control's real native `onPlayerAimChanged(bool)` event plus combat state, rather than treating generic `PLAYER_MODE_ACTION` as aiming. This prevents normal jumps from reviving the crosshair while preserving it for actual aiming and combat.
-
-The Ground Slam targeting circle can be suppressed natively by redirecting the current-build `slam_target_show` event to `slam_target_hide`. The patch is signature-based and fail-open if the path is already modified or unsupported.
+The public release keeps the save-protection menu options **disabled by default**. Enable them in the INI only if you want to remove and guard New Game / Mission Select after finishing the game.
 
 ## Installation
 
@@ -157,11 +140,11 @@ HideNewGame=0
 HideMissionSelect=0
 ```
 
-**Release rule:** `HideNewGame=0` and `HideMissionSelect=0` are the public release defaults. Test packages may temporarily use `1/1` for validation.
+**v1.0.0 defaults:** `HideNewGame=0` and `HideMissionSelect=0`. Set either option to `1` only when you want the corresponding completed-save protection.
 
 These options are not only cosmetic. Their purpose is to **protect a completed-game autosave**. After the story is finished, returning through Mission Select can move progression back to an earlier mission and subsequent autosaves can replace the completed-state save. Starting New Game can replace/delete the active completed-game save path entirely. The intended protected workflow is therefore: once the game is completed, continue playing only from the completed-state autosave.
 
-`Mission Select` is already removed correctly at the native `MenuOptions.m_bHasMissionSaves` model layer. `New Game` has no equivalent visibility field in `MenuOptions`. V1.0Y validated the navigation fix but removed the menu background image/video because its wrapper was injected before the whole native ready callback. V1.0Z keeps the same wrapper logic but injects it from the first `ui::Page::bind` call inside the original ready function, after visual/base/model initialization and before callback registration finishes. If the bind-window hook cannot be installed, the mod falls back to V1.0Y timing so the save-protection navigation behavior fails safe rather than silently returning the ghost slot.
+`Mission Select` is removed at the native `MenuOptions.m_bHasMissionSaves` model layer and its native action is guarded. `New Game` has no equivalent visibility field, so v1.0.0 removes its Coherent row, guards its native action, and installs the validated navigation wrapper from the first `ui::Page::bind` window. This preserves the normal menu image/video background while removing the otherwise invisible New Game navigation step between Continue and Options.
 
 ### Multi Launch icon and white outline
 
@@ -208,7 +191,7 @@ The important current-build findings are:
 - V1.0U1 HUD behavior validated in-game; keep center-dot and split Multi Launch paths frozen;
 - V1.0S+ center-pixel mask validated for the normal crosshair dot; keep this path frozen;
 - V1.0Y navigation ghost fix validated: Continue <-> Options no longer passes through an invisible New Game slot;
-- validate V1.0Z first-`Page::bind` injection: keep Y navigation fix while restoring menu background image/video;
+- v1.0.0 first-`Page::bind` menu timing validated: navigation fix and background image/video both preserved;
 - validate the hardened Expedition forced-modifier behavior;
 - add configurable behavior for additional HUD elements where safe;
 - optional in-game configuration overlay later;
