@@ -181,12 +181,13 @@ static const char kMainMenuScript[] = R"JS(
 (function(){
  var CFG=window.__CDH_MAINMENU_CONFIG||{hideNewGame:0,hideMissionSelect:0};
  if(!CFG.hideNewGame&&!CFG.hideMissionSelect)return;
- if(window.__ControlDynamicHUDMainMenu&&window.__ControlDynamicHUDMainMenu.version==='1.0U1')return;
- window.__ControlDynamicHUDMainMenu={version:'1.0U1'};
+ if(window.__ControlDynamicHUDMainMenu&&window.__ControlDynamicHUDMainMenu.version==='1.0W')return;
+ window.__ControlDynamicHUDMainMenu={version:'1.0W'};
 
  var style=document.getElementById('cdh-mainmenu-style');
  if(!style){style=document.createElement('style');style.id='cdh-mainmenu-style';(document.head||document.documentElement).appendChild(style);}
  style.textContent='[data-cdh-mainmenu-hidden="1"]{display:none!important;height:0!important;min-height:0!important;max-height:0!important;margin:0!important;padding:0!important;border:0!important;overflow:hidden!important;opacity:0!important;pointer-events:none!important;}';
+ var ghost={above:null,below:null};
 
  function norm(s){
   return String(s||'').toLowerCase()
@@ -267,23 +268,27 @@ static const char kMainMenuScript[] = R"JS(
  }
  function removeNewGameBranch(row){
   if(!row||!row.parentNode)return;
-  var parent=row.parentNode,rr=null,below=[];
+  var parent=row.parentNode,rr=null,below=[],above=null,nearBelow=null,aboveTop=-1e9,belowTop=1e9;
   try{rr=row.getBoundingClientRect();}catch(x){}
   if(rr&&parent.children){
    for(var i=0;i<parent.children.length;i++){
     var c=parent.children[i];if(c===row)continue;
     try{
      var cr=c.getBoundingClientRect();
+     if(cr.width<1||cr.height<1)continue;
+     if(cr.top<rr.top-1&&cr.top>aboveTop){above=c;aboveTop=cr.top;}
+     if(cr.top>rr.top+1&&cr.top<belowTop){nearBelow=c;belowTop=cr.top;}
      if(cr.top>rr.top+1)below.push({el:c,top:cr.top});
     }catch(x2){}
    }
-   below.sort(function(a,b){return a.top-b.top;});
+   below.sort(function(x,y){return x.top-y.top;});
   }
+  ghost.above=above||ghost.above;
+  ghost.below=nearBelow||ghost.below;
+
   var pitch=(rr&&below.length)?(below[0].top-rr.top):0;
   try{parent.removeChild(row);}catch(x3){return;}
 
-  // Normal-flow menus compact automatically. If Control keeps absolute/fixed item slots,
-  // move the remaining lower siblings up by one measured menu pitch.
   if(pitch>2&&pitch<240&&below.length){
    setTimeout(function(){
     var first=below[0].el;if(!first||!first.isConnected)return;
@@ -372,6 +377,58 @@ static const char kMainMenuScript[] = R"JS(
   }
   return false;
  }
+ function selectedGhostNeighbor(dir){
+  var e=dir>0?ghost.above:ghost.below;
+  return !!(e&&e.isConnected&&looksSelected(e));
+ }
+ function installCoherentNavInterceptor(){
+  try{
+   if(typeof engine==='undefined'||!engine||typeof engine.on!=='function')return false;
+   if(engine.__cdhNavInterceptor)return true;
+   var originalOn=engine.on;
+   var originalOff=typeof engine.off==='function'?engine.off:null;
+   var mappings=[];
+   engine.on=function(name,callback,context){
+    var n=String(name||'');
+    if((n==='OnNavigateDown'||n==='OnNavigateUp')&&typeof callback==='function'){
+     var dir=n==='OnNavigateDown'?1:-1;
+     var wrapped=function(){
+      var skip=selectedGhostNeighbor(dir);
+      var result=callback.apply(this,arguments);
+      if(skip){
+       try{callback.apply(this,arguments);}catch(x){}
+      }
+      return result;
+     };
+     mappings.push({name:n,original:callback,wrapped:wrapped,context:context});
+     return originalOn.call(engine,name,wrapped,context);
+    }
+    return originalOn.apply(engine,arguments);
+   };
+   if(originalOff){
+    engine.off=function(name,callback,context){
+     for(var i=mappings.length-1;i>=0;i--){
+      var m=mappings[i];
+      if(m.name===String(name||'')&&m.original===callback&&(context===undefined||m.context===context)){
+       mappings.splice(i,1);
+       return originalOff.call(engine,name,m.wrapped,context);
+      }
+     }
+     return originalOff.apply(engine,arguments);
+    };
+   }
+   engine.__cdhNavInterceptor=true;
+   return true;
+  }catch(x){return false;}
+ }
+ // ReadyForBindings is intentionally early. Install before the menu page registers
+ // its JavaScript OnNavigateUp/OnNavigateDown handlers. Retry briefly in case the
+ // engine object is exposed a few ticks later.
+ installCoherentNavInterceptor();
+ setTimeout(installCoherentNavInterceptor,0);
+ setTimeout(installCoherentNavInterceptor,25);
+ setTimeout(installCoherentNavInterceptor,100);
+
  var lastDir=1,synthetic=false,skipQueued=false;
  function sendNav(dir){
   if(synthetic)return;
@@ -428,7 +485,7 @@ static const char kSuiteScript[] = R"JS(
   expeditionEnabled:1,expeditionHideDelayMs:2000,expeditionFadeDurationMs:300
  };
  var CDH=window.__ControlDynamicHUDSuite={
-  version:'1.0U1',health:false,mission:false,crosshair:false,expedition:false,
+  version:'1.0W',health:false,mission:false,crosshair:false,expedition:false,
   hudVisible:true,active:true,lastError:'',forceVisible:false
  };
  var MODE={COMBAT:0,ADVENTURING:1,STORY:2,ACTION:3,EXAMINE:4,HIDDEN:5};
@@ -2077,7 +2134,7 @@ static bool install_hook(WinApi& api,uptr target){
     DWORD dummy=0;api.VirtualProtect((void*)target,stolen,old,&dummy);api.FlushInstructionCache((HANDLE)(uptr)-1,(void*)target,stolen);return true;
 }
 
-extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 121;}
+extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 123;}
 extern "C" __declspec(dllexport) void* CDH_RelocAnchor=(void*)&CDH_Version;
 
 extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
@@ -2089,7 +2146,7 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     load_config(api);g_showHudVk=parse_vk(g_cfg.showHudKey);build_config_script();
     g_WriteFile=api.WriteFile;g_log=api.CreateFileW(L"plugins\\ControlDynamicHUD.log",GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
     if(!g_log||(uptr)g_log==INVALID_HANDLE_VALUE_U)return 1;
-    log_line("Control Dynamic HUD V1.0U1 CRASHFIX TEST");log_line("Mode: safe split icon/outline patches + validated center-dot mask + stable menu guards");
+    log_line("Control Dynamic HUD V1.0W COHERENT NAV TEST");log_line("Mode: U1 validated HUD frozen + Coherent OnNavigate ghost skip");
     log_cstr("Config: Enabled=");log_dec(g_cfg.enabled?1:0);log_cstr(" ShowHUDKey=");log_cstr(g_cfg.showHudKey);log_cstr(" VK=");log_hex(g_showHudVk);log_cstr(" ShowHUDDurationMs=");log_dec(g_cfg.showHudDurationMs);
     log_cstr(" HideNewGame=");log_dec(g_cfg.mainMenuHideNewGame?1:0);
     log_cstr(" HideMissionSelect=");log_dec(g_cfg.mainMenuHideMissionSelect?1:0);
@@ -2106,8 +2163,8 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     if(g_cfg.mainMenuHideMissionSelect&&!patch_mission_select_menu_model(exe))
         log_line("Mission Select MenuOptions suppression not installed; DOM fallback remains active.");
     if(g_cfg.mainMenuHideNewGame)
-        log_line("New Game has no MenuOptions visibility flag; V1.0U1 disables the experimental pre-Coherent binding skip after the Continue crash and keeps native action guard + DOM fallback.");
-    log_line("V1.0U1 crashfix keeps the split icon/outline instruction patches but removes both experimental control-flow detours from V1.0U.");
+        log_line("New Game has no MenuOptions visibility flag; V1.0W keeps the safe action guard + DOM removal and wraps Coherent OnNavigateUp/OnNavigateDown handlers to skip the native ghost slot.");
+    log_line("V1.0W keeps the validated U1 HUD code unchanged; only the main-menu Coherent navigation script is revised.");
     if(g_cfg.multiLaunchHideIcon||g_cfg.multiLaunchHideOutline){
         if(locate_split_launch_highlights(exe)){
             if(g_cfg.multiLaunchHideOutline)
@@ -2118,7 +2175,7 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
             log_line("Split Launch highlight signatures unavailable; affected feature fails open.");
         }
     }
-    log_line("CrosshairDot V1.0U1 keeps the validated V1.0S center mask unchanged.");
+    log_line("CrosshairDot V1.0W keeps the validated V1.0S center mask unchanged; HUD paths otherwise identical to validated U1.");
     void* coh=find_module("coherentuigt.dll");g_coherentBase=coh;log_cstr("CoherentUIGT.dll: ");if(coh){log_hex((uptr)coh);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
     void* ui=find_module("ui_rmdwin10_f.dll");log_cstr("ui_rmdwin10_f.dll: ");if(ui){log_hex((uptr)ui);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
     const char* pageGetViewName="?getView@Page@ui@@QEAAPEAVView@UIGT@Coherent@@XZ";
