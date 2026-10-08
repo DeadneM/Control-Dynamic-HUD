@@ -177,12 +177,43 @@ static constexpr uptr kPublicViewVtableRva = 0x270780;
 static constexpr uptr kExecuteScriptRva = 0x82870;
 static constexpr uptr kViewPageOffset = 0xA8;
 
+static const char kMainMenuPreReadyScript[] = R"JS(
+(function(){
+ if(window.__CDH_PRENAV_INSTALLED)return;
+ window.__CDH_PRENAV_INSTALLED=true;
+ window.__CDH_SHOULD_DOUBLE_NAV=function(){return false;};
+ if(typeof engine==='undefined'||!engine||typeof engine.on!=='function'){
+  window.__CDH_PRENAV_STATUS='engine-unavailable';
+  return;
+ }
+ var originalOn=engine.on;
+ engine.on=function(name,callback,context){
+  var n=String(name||'');
+  if((n==='OnNavigateDown'||n==='OnNavigateUp')&&typeof callback==='function'){
+   var dir=n==='OnNavigateDown'?1:-1;
+   var wrapped=function(){
+    var twice=false;
+    try{twice=!!window.__CDH_SHOULD_DOUBLE_NAV(dir);}catch(x){}
+    var result=callback.apply(this,arguments);
+    if(twice){
+     try{callback.apply(this,arguments);}catch(x2){}
+    }
+    return result;
+   };
+   return originalOn.call(engine,name,wrapped,context);
+  }
+  return originalOn.apply(engine,arguments);
+ };
+ window.__CDH_PRENAV_STATUS='wrapped';
+})();
+)JS";
+
 static const char kMainMenuScript[] = R"JS(
 (function(){
  var CFG=window.__CDH_MAINMENU_CONFIG||{hideNewGame:0,hideMissionSelect:0};
  if(!CFG.hideNewGame&&!CFG.hideMissionSelect)return;
- if(window.__ControlDynamicHUDMainMenu&&window.__ControlDynamicHUDMainMenu.version==='1.0U1')return;
- window.__ControlDynamicHUDMainMenu={version:'1.0U1'};
+ if(window.__ControlDynamicHUDMainMenu&&window.__ControlDynamicHUDMainMenu.version==='1.0Y')return;
+ window.__ControlDynamicHUDMainMenu={version:'1.0Y'};
 
  var style=document.getElementById('cdh-mainmenu-style');
  if(!style){style=document.createElement('style');style.id='cdh-mainmenu-style';(document.head||document.documentElement).appendChild(style);}
@@ -267,18 +298,23 @@ static const char kMainMenuScript[] = R"JS(
  }
  function removeNewGameBranch(row){
   if(!row||!row.parentNode)return;
-  var parent=row.parentNode,rr=null,below=[];
+  var parent=row.parentNode,rr=null,below=[],above=null,nearBelow=null,aboveTop=-1e9,belowTop=1e9;
   try{rr=row.getBoundingClientRect();}catch(x){}
   if(rr&&parent.children){
    for(var i=0;i<parent.children.length;i++){
     var c=parent.children[i];if(c===row)continue;
     try{
      var cr=c.getBoundingClientRect();
+     if(cr.width<1||cr.height<1)continue;
+     if(cr.top<rr.top-1&&cr.top>aboveTop){above=c;aboveTop=cr.top;}
+     if(cr.top>rr.top+1&&cr.top<belowTop){nearBelow=c;belowTop=cr.top;}
      if(cr.top>rr.top+1)below.push({el:c,top:cr.top});
     }catch(x2){}
    }
    below.sort(function(a,b){return a.top-b.top;});
   }
+  window.__CDH_NEWGAME_ABOVE=above||window.__CDH_NEWGAME_ABOVE||null;
+  window.__CDH_NEWGAME_BELOW=nearBelow||window.__CDH_NEWGAME_BELOW||null;
   var pitch=(rr&&below.length)?(below[0].top-rr.top):0;
   try{parent.removeChild(row);}catch(x3){return;}
 
@@ -350,6 +386,10 @@ static const char kMainMenuScript[] = R"JS(
   }
   return false;
  }
+ window.__CDH_SHOULD_DOUBLE_NAV=function(dir){
+  var row=dir>0?window.__CDH_NEWGAME_ABOVE:window.__CDH_NEWGAME_BELOW;
+  return !!(row&&row.isConnected&&looksSelected(row));
+ };
  function hiddenSelected(){
   var rows=document.querySelectorAll('[data-cdh-mainmenu-hidden="1"]');
   for(var i=0;i<rows.length;i++){
@@ -428,7 +468,7 @@ static const char kSuiteScript[] = R"JS(
   expeditionEnabled:1,expeditionHideDelayMs:2000,expeditionFadeDurationMs:300
  };
  var CDH=window.__ControlDynamicHUDSuite={
-  version:'1.0U1',health:false,mission:false,crosshair:false,expedition:false,
+  version:'1.0Y',health:false,mission:false,crosshair:false,expedition:false,
   hudVisible:true,active:true,lastError:'',forceVisible:false
  };
  var MODE={COMBAT:0,ADVENTURING:1,STORY:2,ACTION:3,EXAMINE:4,HIDDEN:5};
@@ -1902,17 +1942,34 @@ static void restore_menu_ready_hook(){
 }
 static void WINAPI HookMenuReady(void* self){
     u32 n=++g_menuReadyCalls;
-    if(g_originalMenuReady)g_originalMenuReady(self);
-    log_cstr("Main menu onReadyForBindings #");log_dec(n);log_bytes("\r\n",2);
     void* view=(self&&g_pageGetView)?g_pageGetView(self):nullptr;
     uptr vt=view?rdptr(view):0;
     uptr exec=vt?rdptr((u8*)vt+61u*sizeof(uptr)):0;
     uptr expectedVt=(uptr)g_coherentBase+kPublicViewVtableRva;
     uptr expected=(uptr)g_coherentBase+kExecuteScriptRva;
-    if(!view||vt!=expectedVt||exec!=expected)return;
+    bool injectable=view&&vt==expectedVt&&exec==expected;
+
+    // Critical ordering for V1.0Y: install the engine.on wrapper BEFORE the game's
+    // original onReadyForBindings registers OnNavigateUp/OnNavigateDown handlers.
+    if(injectable){
+        ((ExecuteScriptFn)exec)(view,kMainMenuPreReadyScript,nullptr);
+        log_line("Main menu pre-ready navigation wrapper injected before original onReadyForBindings.");
+    }else{
+        log_line("Main menu pre-ready wrapper could not access the public View; continuing fail-open.");
+    }
+
+    if(g_originalMenuReady)g_originalMenuReady(self);
+    log_cstr("Main menu onReadyForBindings #");log_dec(n);log_bytes("\r\n",2);
+
+    // Re-fetch in case the original callback changed the binding context.
+    view=(self&&g_pageGetView)?g_pageGetView(self):nullptr;
+    vt=view?rdptr(view):0;
+    exec=vt?rdptr((u8*)vt+61u*sizeof(uptr)):0;
+    injectable=view&&vt==expectedVt&&exec==expected;
+    if(!injectable)return;
     ((ExecuteScriptFn)exec)(view,g_menuConfigScript,nullptr);
     ((ExecuteScriptFn)exec)(view,kMainMenuScript,nullptr);
-    log_line("Main menu cleanup script injected.");
+    log_line("Main menu cleanup script injected after original onReadyForBindings.");
 }
 static bool install_menu_ready_hook(void* menu){
     if(!menu||!g_VirtualProtect)return false;
@@ -2077,7 +2134,7 @@ static bool install_hook(WinApi& api,uptr target){
     DWORD dummy=0;api.VirtualProtect((void*)target,stolen,old,&dummy);api.FlushInstructionCache((HANDLE)(uptr)-1,(void*)target,stolen);return true;
 }
 
-extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 121;}
+extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 126;}
 extern "C" __declspec(dllexport) void* CDH_RelocAnchor=(void*)&CDH_Version;
 
 extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
@@ -2089,7 +2146,7 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     load_config(api);g_showHudVk=parse_vk(g_cfg.showHudKey);build_config_script();
     g_WriteFile=api.WriteFile;g_log=api.CreateFileW(L"plugins\\ControlDynamicHUD.log",GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
     if(!g_log||(uptr)g_log==INVALID_HANDLE_VALUE_U)return 1;
-    log_line("Control Dynamic HUD V1.0U1 CRASHFIX TEST");log_line("Mode: safe split icon/outline patches + validated center-dot mask + stable menu guards");
+    log_line("Control Dynamic HUD V1.0Y PRE-READY NAV WRAP TEST");log_line("Mode: U1 validated HUD frozen + pre-onReadyForBindings Coherent navigation wrapper");
     log_cstr("Config: Enabled=");log_dec(g_cfg.enabled?1:0);log_cstr(" ShowHUDKey=");log_cstr(g_cfg.showHudKey);log_cstr(" VK=");log_hex(g_showHudVk);log_cstr(" ShowHUDDurationMs=");log_dec(g_cfg.showHudDurationMs);
     log_cstr(" HideNewGame=");log_dec(g_cfg.mainMenuHideNewGame?1:0);
     log_cstr(" HideMissionSelect=");log_dec(g_cfg.mainMenuHideMissionSelect?1:0);
@@ -2106,8 +2163,8 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     if(g_cfg.mainMenuHideMissionSelect&&!patch_mission_select_menu_model(exe))
         log_line("Mission Select MenuOptions suppression not installed; DOM fallback remains active.");
     if(g_cfg.mainMenuHideNewGame)
-        log_line("New Game has no MenuOptions visibility flag; V1.0U1 disables the experimental pre-Coherent binding skip after the Continue crash and keeps native action guard + DOM fallback.");
-    log_line("V1.0U1 crashfix keeps the split icon/outline instruction patches but removes both experimental control-flow detours from V1.0U.");
+        log_line("New Game has no MenuOptions visibility flag; V1.0Y keeps the stable action guard + DOM removal and installs the Coherent navigation wrapper before the original onReadyForBindings.");
+    log_line("V1.0Y keeps validated U1 HUD paths frozen; only main-menu pre-ready Coherent handler wrapping is new.");
     if(g_cfg.multiLaunchHideIcon||g_cfg.multiLaunchHideOutline){
         if(locate_split_launch_highlights(exe)){
             if(g_cfg.multiLaunchHideOutline)
@@ -2118,7 +2175,7 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
             log_line("Split Launch highlight signatures unavailable; affected feature fails open.");
         }
     }
-    log_line("CrosshairDot V1.0U1 keeps the validated V1.0S center mask unchanged.");
+    log_line("CrosshairDot V1.0Y keeps the validated V1.0S center mask unchanged; HUD paths otherwise identical to validated U1.");
     void* coh=find_module("coherentuigt.dll");g_coherentBase=coh;log_cstr("CoherentUIGT.dll: ");if(coh){log_hex((uptr)coh);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
     void* ui=find_module("ui_rmdwin10_f.dll");log_cstr("ui_rmdwin10_f.dll: ");if(ui){log_hex((uptr)ui);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
     const char* pageGetViewName="?getView@Page@ui@@QEAAPEAVView@UIGT@Coherent@@XZ";
