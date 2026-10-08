@@ -1184,7 +1184,7 @@ static bool install_code_detour(WinApi& api,uptr target,void* hook,void** origin
 static const u8 kMainMenuInputDispatchPat[] = {
 0x48,0x89,0x5C,0x24,0x08,0x48,0x89,0x74,0x24,0x10,0x57,0x48,0x83,0xEC,0x20,
 0x48,0x8B,0xF9,0x48,0x8D,0x1D,0,0,0,0,0x48,0x8D,0x35,0,0,0,0};
-static const char kMainMenuInputDispatchMask[] = "xxxxxxxxxxxxxxxxxxxxxx????xxx????";
+static const char kMainMenuInputDispatchMask[] = "xxxxxxxxxxxxxxxxxxxxx????xxx????";
 
 static const char kNavUpName[]="OnNavigateUp";
 static const char kNavDownName[]="OnNavigateDown";
@@ -2206,7 +2206,7 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     load_config(api);g_showHudVk=parse_vk(g_cfg.showHudKey);build_config_script();
     g_WriteFile=api.WriteFile;g_log=api.CreateFileW(L"plugins\\ControlDynamicHUD.log",GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
     if(!g_log||(uptr)g_log==INVALID_HANDLE_VALUE_U)return 1;
-    log_line("Control Dynamic HUD V1.0X NATIVE MENU NAV TEST");log_line("Mode: U1 validated HUD frozen + native main-menu input bridge ghost skip");
+    log_line("Control Dynamic HUD V1.0X1 NATIVE MENU NAV TEST");log_line("Mode: U1 validated HUD frozen + native main-menu input bridge ghost skip");
     log_cstr("Config: Enabled=");log_dec(g_cfg.enabled?1:0);log_cstr(" ShowHUDKey=");log_cstr(g_cfg.showHudKey);log_cstr(" VK=");log_hex(g_showHudVk);log_cstr(" ShowHUDDurationMs=");log_dec(g_cfg.showHudDurationMs);
     log_cstr(" HideNewGame=");log_dec(g_cfg.mainMenuHideNewGame?1:0);
     log_cstr(" HideMissionSelect=");log_dec(g_cfg.mainMenuHideMissionSelect?1:0);
@@ -2218,7 +2218,7 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     patch_ground_slam_target_circle(exe);
     patch_main_menu_actions(exe);
     if(g_cfg.mainMenuHideNewGame){
-        log_line("V1.0X keeps the stable New Game action guard + DOM row removal and adds a native input-bridge ghost skip.");
+        log_line("V1.0X1 fixes the native input-bridge signature mask; offline validation on the current Control_DX12.exe resolves exactly one UIMainMenu bridge.");
         if(!install_main_menu_input_dispatch_hook(api,exe))
             log_line("Native main-menu input bridge hook not installed; New Game ghost-skip feature fails open.");
     }
@@ -2226,8 +2226,8 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     if(g_cfg.mainMenuHideMissionSelect&&!patch_mission_select_menu_model(exe))
         log_line("Mission Select MenuOptions suppression not installed; DOM fallback remains active.");
     if(g_cfg.mainMenuHideNewGame)
-        log_line("New Game has no MenuOptions visibility flag; V1.0X keeps native action guard + DOM removal and skips the hidden navigation index in the native UIMainMenu input bridge.");
-    log_line("V1.0X keeps the validated U1 HUD paths frozen; only native main-menu navigation handling is new.");
+        log_line("New Game has no MenuOptions visibility flag; V1.0X1 keeps native action guard + DOM removal and skips the hidden navigation index in the verified native UIMainMenu input bridge.");
+    log_line("V1.0X1 keeps the validated U1 HUD paths frozen; only the verified native main-menu navigation hook is active.");
     if(g_cfg.multiLaunchHideIcon||g_cfg.multiLaunchHideOutline){
         if(locate_split_launch_highlights(exe)){
             if(g_cfg.multiLaunchHideOutline)
@@ -2238,7 +2238,7 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
             log_line("Split Launch highlight signatures unavailable; affected feature fails open.");
         }
     }
-    log_line("CrosshairDot V1.0X keeps the validated V1.0S center mask unchanged; HUD paths otherwise identical to validated U1.");
+    log_line("CrosshairDot V1.0X1 keeps the validated V1.0S center mask unchanged; HUD paths otherwise identical to validated U1.");
     void* coh=find_module("coherentuigt.dll");g_coherentBase=coh;log_cstr("CoherentUIGT.dll: ");if(coh){log_hex((uptr)coh);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
     void* ui=find_module("ui_rmdwin10_f.dll");log_cstr("ui_rmdwin10_f.dll: ");if(ui){log_hex((uptr)ui);log_cstr(" (loaded)");}else log_cstr("NOT FOUND");log_bytes("\r\n",2);
     const char* pageGetViewName="?getView@Page@ui@@QEAAPEAVView@UIGT@Coherent@@XZ";
