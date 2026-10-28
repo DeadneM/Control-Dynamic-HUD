@@ -475,7 +475,7 @@ static const char kSuiteScript[] = R"JS(
   expeditionEnabled:1,expeditionHideDelayMs:2000,expeditionFadeDurationMs:300
  };
  var CDH=window.__ControlDynamicHUDSuite={
-  version:'1.0Z',health:false,mission:false,crosshair:false,expedition:false,
+  version:'1.0.1T',health:false,mission:false,crosshair:false,expedition:false,
   hudVisible:true,active:true,lastError:'',forceVisible:false
  };
  var MODE={COMBAT:0,ADVENTURING:1,STORY:2,ACTION:3,EXAMINE:4,HIDDEN:5};
