@@ -220,7 +220,7 @@ static const char kMainMenuScript[] = R"JS(
  var CFG=window.__CDH_MAINMENU_CONFIG||{hideNewGame:0,hideMissionSelect:0};
  if(!CFG.hideNewGame&&!CFG.hideMissionSelect)return;
  if(window.__ControlDynamicHUDMainMenu&&window.__ControlDynamicHUDMainMenu.version==='1.0Z')return;
- window.__ControlDynamicHUDMainMenu={version:'1.0Z'};
+ window.__ControlDynamicHUDMainMenu={version:'1.0.1T'};
 
  var style=document.getElementById('cdh-mainmenu-style');
  if(!style){style=document.createElement('style');style.id='cdh-mainmenu-style';(document.head||document.documentElement).appendChild(style);}
@@ -497,7 +497,7 @@ static const char kSuiteScript[] = R"JS(
   +'.health-bar[data-cdh-hidden="1"]:not(.health-bar--hidden){opacity:0;}'
   +'.health-bar--hidden{opacity:0!important;}'
   +'.mission-log-wrapper{transition:opacity '+CFG.missionFadeDurationMs+'ms var(--easing);}'
-  +'.mission-log-wrapper.cdh-hide{opacity:0;}'
+  +'.mission-log-wrapper.cdh-hide{opacity:0!important;}'
   +'.mission-log-wrapper.cdh-in-map{opacity:1!important;}'
   +'.awesome-crosshair{transition:opacity '+CFG.crosshairFadeDurationMs+'ms var(--easing);}'
   +'.awesome-crosshair[data-cdh-crosshair-hidden="1"]{opacity:0!important;}'
@@ -522,7 +522,7 @@ static const char kSuiteScript[] = R"JS(
   if(v)resumeHud();else suspendHud();
  }
  function recomputeActive(){
-  hudVisible=(g_HUDMode.m_bIsHudVisible!==false);
+  if(window.g_HUDMode)hudVisible=(g_HUDMode.m_bIsHudVisible!==false);
   CDH.hudVisible=hudVisible;
   setActive(hudVisible&&playerMode!==MODE.HIDDEN);
  }
@@ -597,15 +597,22 @@ static const char kSuiteScript[] = R"JS(
   if(window.g_runtimeInterfaceOptions&&g_runtimeInterfaceOptions.m_bMissionHUDEnabled===false)return false;
   var m=document.querySelector('.map-overlay'),l=document.querySelector('.mission-log-wrapper');
   if(!m||!l){CDH.mission=false;return false;}
-  if(m!==mission.map||l!==mission.log||!mission.obs){
+  var changed=(m!==mission.map||l!==mission.log||!mission.obs);
+  if(changed){
    clearTimer(mission);disconnectObserver(mission);
    mission.map=m;mission.log=l;mission.shown=true;
    mission.log.classList.remove('cdh-hide');
    mission.obs=new MutationObserver(onMapChanged);
    mission.obs.observe(m,{attributes:true,attributeFilter:['class']});
+   CDH.mission=true;
+   var inMap=m.classList.contains('map--show');
+   mission.log.classList.toggle('cdh-in-map',CFG.missionShowInMap&&inMap);
+   if(isForced()||(CFG.missionShowInMap&&inMap))missionShow();
+   else missionHide(CFG.missionInitialHideDelayMs);
+   return true;
   }
-  CDH.mission=true;onMapChanged();
-  if(!isForced()&&!m.classList.contains('map--show'))missionHide(CFG.missionInitialHideDelayMs);
+  CDH.mission=true;
+  if(isForced())missionShow();
   return true;
  }
 
@@ -861,13 +868,13 @@ static const char kSuiteScript[] = R"JS(
 
  function heartbeatTick(){
   if(!active)return;
-  var needs=
-   (CFG.healthEnabled&&(!hp.bar||!hp.fill||!hp.bar.isConnected||!hp.fill.isConnected))||
-   (CFG.missionEnabled&&(!mission.map||!mission.log||!mission.map.isConnected||!mission.log.isConnected))||
-   (CFG.crosshairEnabled&&(!cross.el||!cross.el.isConnected))||
-   (CFG.crosshairDotEnabled&&(!dot.root||!dot.root.isConnected))||
-   (CFG.expeditionEnabled&&(!expedition.el||!expedition.el.isConnected));
-  if(needs)scheduleRebind(0);
+  addStyle();
+  if(CFG.healthEnabled&&(!hp.bar||!hp.fill||!hp.bar.isConnected||!hp.fill.isConnected))bindHealth();
+  if(CFG.missionEnabled&&(!mission.map||!mission.log||!mission.map.isConnected||!mission.log.isConnected))bindMission();
+  if(CFG.crosshairEnabled&&(!cross.el||!cross.el.isConnected))bindCrosshair();
+  if(CFG.crosshairDotEnabled&&(!dot.root||!dot.root.isConnected))bindCrosshairDot();
+  if(CFG.expeditionEnabled&&(!expedition.el||!expedition.el.isConnected))bindExpedition();
+  bindRuntimeModels();
  }
 
  function forceShowHUD(){
@@ -895,9 +902,10 @@ static const char kSuiteScript[] = R"JS(
   if(!CFG.diagnostics)return;
   var p=document.getElementById('cdh-diagnostic');if(!p)return;
   p.textContent=
-   'Control Dynamic HUD v1.0P configurable suite\n'
+   'Control Dynamic HUD v1.0.1 mission/runtime test\n'
   +'HUD '+yes(hudVisible)+' | active '+yes(active)+' | force '+yes(isForced())+' | aim '+yes(isAiming)+' | key '+CFG.showHudKey+'\n'
   +'health '+yes(CDH.health)+' | mission '+yes(CDH.mission)+' | crosshair '+yes(CDH.crosshair)+' | dot '+yes(CDH.crosshairDot)+' | expedition '+yes(CDH.expedition)+'\n'
+  +'HUDModel '+yes(hudModeBound)+' | missionModel '+yes(missionModelBound)+' | missionTimer '+yes(!!mission.timer)+' | missionHidden '+yes(!!(mission.log&&mission.log.classList.contains('cdh-hide')))+'\n'
   +'ammo '+yes(!!document.querySelector('.awesome-crosshair--ammo'))+' | enemyHP '+yes(!!document.querySelector('.enemy-health-container'))+' | energy '+yes(!!document.querySelector('.ability-resource-bar'))+'\n'
   +'pickup '+yes(!!document.querySelector('.pickup-notifications-container'))+' | interaction '+yes(!!document.querySelector('.interaction-marker-container'))+' | threat '+yes(!!document.querySelector('.threat-indicators'))+
    (CDH.lastError?'\nERR '+CDH.lastError:'');
@@ -915,30 +923,25 @@ static const char kSuiteScript[] = R"JS(
   CDH.lastError='promise: '+String(e&&e.reason?e.reason:'unknown');updateDiag();
  });
 
- var attempts=0;
- function boot(){
-  if(!document.documentElement||!window.engine||!window.g_HUDMode){
-   if(++attempts<100)setTimeout(boot,100);
-   return;
+ var attempts=0,hudModeBound=false,missionModelBound=false,aimBound=false,bootStarted=false;
+ function bindRuntimeModels(){
+  if(!window.engine)return;
+  if(!hudModeBound&&window.g_HUDMode){
+   hudModeBound=true;
+   playerMode=g_HUDMode.m_iPlayerMode;
+   hudVisible=(g_HUDMode.m_bIsHudVisible!==false);
+   active=hudVisible&&playerMode!==MODE.HIDDEN;
+   CDH.hudVisible=hudVisible;CDH.active=active;
+   engine.addModelChangeListener(g_HUDMode,'m_iPlayerMode',function(){
+    playerMode=g_HUDMode.m_iPlayerMode;recomputeActive();
+    if(active){updateHealth();updateCrosshair();scheduleRebind(0);}updateDiag();
+   });
+   engine.addModelChangeListener(g_HUDMode,'m_bIsHudVisible',function(){
+    recomputeActive();updateDiag();
+   });
   }
-  playerMode=g_HUDMode.m_iPlayerMode;
-  hudVisible=(g_HUDMode.m_bIsHudVisible!==false);
-  active=hudVisible&&playerMode!==MODE.HIDDEN;
-  CDH.hudVisible=hudVisible;CDH.active=active;
-
-  engine.addModelChangeListener(g_HUDMode,'m_iPlayerMode',function(){
-   playerMode=g_HUDMode.m_iPlayerMode;recomputeActive();
-   if(active){updateHealth();updateCrosshair();scheduleRebind(0);}updateDiag();
-  });
-  engine.addModelChangeListener(g_HUDMode,'m_bIsHudVisible',function(){
-   recomputeActive();updateDiag();
-  });
-  engine.on('onPlayerAimChanged',function(v){
-   isAiming=!!v;
-   if(active){updateCrosshair();}
-   updateDiag();
-  });
-  if(window.g_missionPromptUIData){
+  if(!missionModelBound&&window.g_missionPromptUIData){
+   missionModelBound=true;
    engine.addModelChangeListener(g_missionPromptUIData,'m_missionUIData',function(){
     if(active&&CFG.missionEnabled&&mission.log){
      missionShow();
@@ -947,6 +950,26 @@ static const char kSuiteScript[] = R"JS(
     updateDiag();
    });
   }
+  if(!aimBound){
+   aimBound=true;
+   engine.on('onPlayerAimChanged',function(v){
+    isAiming=!!v;
+    if(active)updateCrosshair();
+    updateDiag();
+   });
+  }
+ }
+ function boot(){
+  if(!document.documentElement||!window.engine){
+   if(++attempts<100)setTimeout(boot,100);
+   return;
+  }
+  if(bootStarted)return;
+  bootStarted=true;
+  // Do not gate the entire DOM suite on g_HUDMode. Some store/UI packages can
+  // expose the DOM before that model. Start safely and bind models when present.
+  hudVisible=true;active=true;CDH.hudVisible=true;CDH.active=true;
+  bindRuntimeModels();
   startDiag();
   heartbeat=setInterval(heartbeatTick,1000);
   if(active)rebindBurst();
@@ -2236,7 +2259,7 @@ static bool install_hook(WinApi& api,uptr target){
     DWORD dummy=0;api.VirtualProtect((void*)target,stolen,old,&dummy);api.FlushInstructionCache((HANDLE)(uptr)-1,(void*)target,stolen);return true;
 }
 
-extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 128;}
+extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 129;}
 extern "C" __declspec(dllexport) void* CDH_RelocAnchor=(void*)&CDH_Version;
 
 extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
@@ -2248,7 +2271,7 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     load_config(api);g_showHudVk=parse_vk(g_cfg.showHudKey);build_config_script();
     g_WriteFile=api.WriteFile;g_log=api.CreateFileW(L"plugins\\ControlDynamicHUD.log",GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
     if(!g_log||(uptr)g_log==INVALID_HANDLE_VALUE_U)return 1;
-    log_line("Control Dynamic HUD v1.0.0");log_line("Mode: validated configurable HUD + Page::bind-window main-menu save protection");
+    log_line("Control Dynamic HUD v1.0.1 MISSION/RUNTIME TEST");log_line("Mode: v1.0.0 base + idempotent Mission Log + targeted heartbeat + HUD model fallback");
     log_cstr("Config: Enabled=");log_dec(g_cfg.enabled?1:0);log_cstr(" ShowHUDKey=");log_cstr(g_cfg.showHudKey);log_cstr(" VK=");log_hex(g_showHudVk);log_cstr(" ShowHUDDurationMs=");log_dec(g_cfg.showHudDurationMs);
     log_cstr(" HideNewGame=");log_dec(g_cfg.mainMenuHideNewGame?1:0);
     log_cstr(" HideMissionSelect=");log_dec(g_cfg.mainMenuHideMissionSelect?1:0);
