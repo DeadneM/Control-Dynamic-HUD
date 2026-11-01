@@ -4,3 +4,5 @@ build-out/
 *.ilk
 *.log
 .DS_Store
+delivery/*
+!delivery/Control_Dynamic_HUD_v1.0.1-clean-test.zip
