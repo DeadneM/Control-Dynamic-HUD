@@ -14,6 +14,16 @@ A modern dynamic-HUD plugin for **Control** (PC), rebuilt as a native x64 plugin
 
 ## Current status
 
+### v1.0.1 clean test (experimental)
+
+Branch `test/v1.0.1-clean` retains the Mission Log timer fix, targeted component
+heartbeat and late runtime-model bootstrap on the validated v1.0.0 base.
+Temporary extra diagnostic instrumentation is removed; `ShowDiagnostics=0`,
+`HideNewGame=0` and `HideMissionSelect=0` remain the public defaults.
+All validated F1, crosshair-dot, Launch/MultiLaunch and menu protection paths
+are preserved. This candidate requires gameplay and antivirus verification;
+it is not promoted to main or release. See [audit and test plan](docs/V1.0.1_AUDIT.md).
+
 ### v1.0.0
 
 The configurable native rewrite is now the canonical release.

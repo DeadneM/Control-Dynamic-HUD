@@ -14,6 +14,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Embedded HUD regression checks
+        run: node tests/hud-runtime.cjs
+
       - name: Build x64 plugin
         shell: pwsh
         run: ./build/build.ps1
@@ -25,6 +28,7 @@ jobs:
           Copy-Item build-out/ControlDynamicHUD.dll dist/plugins/
           Copy-Item config/ControlDynamicHUD.ini dist/plugins/
           Copy-Item README.md dist/
+          Copy-Item docs/V1.0.1_AUDIT.md dist/
           Compress-Archive -Path dist/* -DestinationPath Control_Dynamic_HUD_CI.zip -Force
 
       - uses: actions/upload-artifact@v4

@@ -219,8 +219,8 @@ static const char kMainMenuScript[] = R"JS(
 (function(){
  var CFG=window.__CDH_MAINMENU_CONFIG||{hideNewGame:0,hideMissionSelect:0};
  if(!CFG.hideNewGame&&!CFG.hideMissionSelect)return;
- if(window.__ControlDynamicHUDMainMenu&&window.__ControlDynamicHUDMainMenu.version==='1.0Z')return;
- window.__ControlDynamicHUDMainMenu={version:'1.0.1T'};
+ if(window.__ControlDynamicHUDMainMenu&&window.__ControlDynamicHUDMainMenu.version==='1.0.1-clean')return;
+ window.__ControlDynamicHUDMainMenu={version:'1.0.1-clean'};
 
  var style=document.getElementById('cdh-mainmenu-style');
  if(!style){style=document.createElement('style');style.id='cdh-mainmenu-style';(document.head||document.documentElement).appendChild(style);}
@@ -475,7 +475,7 @@ static const char kSuiteScript[] = R"JS(
   expeditionEnabled:1,expeditionHideDelayMs:2000,expeditionFadeDurationMs:300
  };
  var CDH=window.__ControlDynamicHUDSuite={
-  version:'1.0.1T',health:false,mission:false,crosshair:false,expedition:false,
+  version:'1.0.1-clean',health:false,mission:false,crosshair:false,expedition:false,
   hudVisible:true,active:true,lastError:'',forceVisible:false
  };
  var MODE={COMBAT:0,ADVENTURING:1,STORY:2,ACTION:3,EXAMINE:4,HIDDEN:5};
@@ -867,6 +867,7 @@ static const char kSuiteScript[] = R"JS(
  }
 
  function heartbeatTick(){
+  bindRuntimeModels();
   if(!active)return;
   addStyle();
   if(CFG.healthEnabled&&(!hp.bar||!hp.fill||!hp.bar.isConnected||!hp.fill.isConnected))bindHealth();
@@ -874,7 +875,6 @@ static const char kSuiteScript[] = R"JS(
   if(CFG.crosshairEnabled&&(!cross.el||!cross.el.isConnected))bindCrosshair();
   if(CFG.crosshairDotEnabled&&(!dot.root||!dot.root.isConnected))bindCrosshairDot();
   if(CFG.expeditionEnabled&&(!expedition.el||!expedition.el.isConnected))bindExpedition();
-  bindRuntimeModels();
  }
 
  function forceShowHUD(){
@@ -902,10 +902,9 @@ static const char kSuiteScript[] = R"JS(
   if(!CFG.diagnostics)return;
   var p=document.getElementById('cdh-diagnostic');if(!p)return;
   p.textContent=
-   'Control Dynamic HUD v1.0.1 mission/runtime test\n'
+   'Control Dynamic HUD v1.0.1 clean test\n'
   +'HUD '+yes(hudVisible)+' | active '+yes(active)+' | force '+yes(isForced())+' | aim '+yes(isAiming)+' | key '+CFG.showHudKey+'\n'
   +'health '+yes(CDH.health)+' | mission '+yes(CDH.mission)+' | crosshair '+yes(CDH.crosshair)+' | dot '+yes(CDH.crosshairDot)+' | expedition '+yes(CDH.expedition)+'\n'
-  +'HUDModel '+yes(hudModeBound)+' | missionModel '+yes(missionModelBound)+' | missionTimer '+yes(!!mission.timer)+' | missionHidden '+yes(!!(mission.log&&mission.log.classList.contains('cdh-hide')))+'\n'
   +'ammo '+yes(!!document.querySelector('.awesome-crosshair--ammo'))+' | enemyHP '+yes(!!document.querySelector('.enemy-health-container'))+' | energy '+yes(!!document.querySelector('.ability-resource-bar'))+'\n'
   +'pickup '+yes(!!document.querySelector('.pickup-notifications-container'))+' | interaction '+yes(!!document.querySelector('.interaction-marker-container'))+' | threat '+yes(!!document.querySelector('.threat-indicators'))+
    (CDH.lastError?'\nERR '+CDH.lastError:'');
@@ -930,8 +929,8 @@ static const char kSuiteScript[] = R"JS(
    hudModeBound=true;
    playerMode=g_HUDMode.m_iPlayerMode;
    hudVisible=(g_HUDMode.m_bIsHudVisible!==false);
-   active=hudVisible&&playerMode!==MODE.HIDDEN;
-   CDH.hudVisible=hudVisible;CDH.active=active;
+   CDH.hudVisible=hudVisible;
+   setActive(hudVisible&&playerMode!==MODE.HIDDEN);
    engine.addModelChangeListener(g_HUDMode,'m_iPlayerMode',function(){
     playerMode=g_HUDMode.m_iPlayerMode;recomputeActive();
     if(active){updateHealth();updateCrosshair();scheduleRebind(0);}updateDiag();
@@ -2271,7 +2270,7 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     load_config(api);g_showHudVk=parse_vk(g_cfg.showHudKey);build_config_script();
     g_WriteFile=api.WriteFile;g_log=api.CreateFileW(L"plugins\\ControlDynamicHUD.log",GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
     if(!g_log||(uptr)g_log==INVALID_HANDLE_VALUE_U)return 1;
-    log_line("Control Dynamic HUD v1.0.1 MISSION/RUNTIME TEST");log_line("Mode: v1.0.0 base + idempotent Mission Log + targeted heartbeat + HUD model fallback");
+    log_line("Control Dynamic HUD v1.0.1 CLEAN TEST");log_line("Mode: v1.0.0 base + idempotent Mission Log + targeted heartbeat + HUD model fallback");
     log_cstr("Config: Enabled=");log_dec(g_cfg.enabled?1:0);log_cstr(" ShowHUDKey=");log_cstr(g_cfg.showHudKey);log_cstr(" VK=");log_hex(g_showHudVk);log_cstr(" ShowHUDDurationMs=");log_dec(g_cfg.showHudDurationMs);
     log_cstr(" HideNewGame=");log_dec(g_cfg.mainMenuHideNewGame?1:0);
     log_cstr(" HideMissionSelect=");log_dec(g_cfg.mainMenuHideMissionSelect?1:0);
