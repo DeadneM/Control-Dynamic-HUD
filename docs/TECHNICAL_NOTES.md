@@ -1,5 +1,11 @@
 # Technical Notes
 
+## v1.0.1 clean continuation (2026-11-01)
+
+See [V1.0.1_AUDIT.md](V1.0.1_AUDIT.md) for the cumulative delta audit,
+preserved native paths, late-model lifecycle correction, evidence boundaries,
+acceptance criteria, manual test, rollback and outstanding scanner verification.
+
 ## Legacy DynaHUD/UIFramework diagnosis
 
 The original DynaHUD package uses `UIFramework.dll` to inject CSS/JavaScript into `uiresources\\p7\\hud.ui`.
