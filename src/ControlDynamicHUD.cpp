@@ -597,15 +597,22 @@ static const char kSuiteScript[] = R"JS(
   if(window.g_runtimeInterfaceOptions&&g_runtimeInterfaceOptions.m_bMissionHUDEnabled===false)return false;
   var m=document.querySelector('.map-overlay'),l=document.querySelector('.mission-log-wrapper');
   if(!m||!l){CDH.mission=false;return false;}
-  if(m!==mission.map||l!==mission.log||!mission.obs){
+  var changed=(m!==mission.map||l!==mission.log||!mission.obs);
+  if(changed){
    clearTimer(mission);disconnectObserver(mission);
    mission.map=m;mission.log=l;mission.shown=true;
    mission.log.classList.remove('cdh-hide');
    mission.obs=new MutationObserver(onMapChanged);
    mission.obs.observe(m,{attributes:true,attributeFilter:['class']});
+   CDH.mission=true;
+   var inMap=m.classList.contains('map--show');
+   mission.log.classList.toggle('cdh-in-map',CFG.missionShowInMap&&inMap);
+   if(isForced()||(CFG.missionShowInMap&&inMap))missionShow();
+   else missionHide(CFG.missionInitialHideDelayMs);
+   return true;
   }
-  CDH.mission=true;onMapChanged();
-  if(!isForced()&&!m.classList.contains('map--show'))missionHide(CFG.missionInitialHideDelayMs);
+  CDH.mission=true;
+  if(isForced())missionShow();
   return true;
  }
 
