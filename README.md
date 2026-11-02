@@ -14,15 +14,18 @@ A modern dynamic-HUD plugin for **Control** (PC), rebuilt as a native x64 plugin
 
 ## Current status
 
-### v1.0.1 clean test (experimental)
+### v1.0.1
 
 Branch `test/v1.0.1-clean` retains the Mission Log timer fix, targeted component
 heartbeat and late runtime-model bootstrap on the validated v1.0.0 base.
 Temporary extra diagnostic instrumentation is removed; `ShowDiagnostics=0`,
 `HideNewGame=0` and `HideMissionSelect=0` remain the public defaults.
 All validated F1, crosshair-dot, Launch/MultiLaunch and menu protection paths
-are preserved. This candidate requires gameplay and antivirus verification;
-it is not promoted to main or release. See [audit and test plan](docs/V1.0.1_AUDIT.md).
+are preserved. Merged into main and published at the project owner's request.
+[Download v1.0.1](https://github.com/DeadneM/Control-Dynamic-HUD/releases/tag/v1.0.1).
+CI and local Defender checks passed; fresh gameplay confirmation for the cleaned
+candidate and Nexus scanner acceptance remain pending.
+See [audit and test plan](docs/V1.0.1_AUDIT.md).
 
 ### v1.0.0
 
