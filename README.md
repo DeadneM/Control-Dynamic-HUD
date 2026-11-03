@@ -23,15 +23,16 @@ reticle visibility flag changes, including F1 restoration. All other accepted
 HUD paths and public defaults are preserved. This is experimental and requires
 an in-game test; see [beta notes and rollback](docs/V1.0.2_BETA.md).
 
-### v1.0.1 clean test (experimental)
+### v1.0.1 (published; two issues reopened above)
 
 Branch `test/v1.0.1-clean` retains the Mission Log timer fix, targeted component
 heartbeat and late runtime-model bootstrap on the validated v1.0.0 base.
 Temporary extra diagnostic instrumentation is removed; `ShowDiagnostics=0`,
 `HideNewGame=0` and `HideMissionSelect=0` remain the public defaults.
 All validated F1, crosshair-dot, Launch/MultiLaunch and menu protection paths
-are preserved. This candidate requires gameplay and antivirus verification;
-it is not promoted to main or release. See [audit and test plan](docs/V1.0.1_AUDIT.md).
+are preserved. Published at the user's request; menu navigation and Launch target
+reticle issues are now tracked in the beta above. The published package remains
+available for rollback. See [original audit and test plan](docs/V1.0.1_AUDIT.md).
 
 ### v1.0.0
 
