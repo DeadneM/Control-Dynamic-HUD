@@ -20,6 +20,9 @@ jobs:
       - name: Embedded menu regression checks
         run: node tests/menu-runtime.cjs
 
+      - name: Embedded Launch target regression checks
+        run: node tests/launch-runtime.cjs
+
       - name: Build x64 plugin
         shell: pwsh
         run: ./build/build.ps1

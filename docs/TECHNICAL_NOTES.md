@@ -6,6 +6,11 @@ Two user-reported regressions reopened the menu ghost and Launch target-reticle
 work. See [V1.0.2_BETA.md](V1.0.2_BETA.md) for installation/log evidence, static
 DX11/DX12 model publication ABI, changes, acceptance, rollback and cumulative TODO.
 
+Beta 2: direct inspection of the installed HUD asset distinguishes target marks
+(g_multiLaunchIndicator1/2/3) from the primary LaunchIndicator and Slam model.
+It replaces beta 1's unsuccessful native reticle path with exact-component
+opacity/delay/fade control while freezing the menu repair. See the beta notes.
+
 ## v1.0.1 clean continuation (2026-11-01)
 
 See [V1.0.1_AUDIT.md](V1.0.1_AUDIT.md) for the cumulative delta audit,

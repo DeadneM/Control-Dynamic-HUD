@@ -23,6 +23,13 @@ reticle visibility flag changes, including F1 restoration. All other accepted
 HUD paths and public defaults are preserved. This is experimental and requires
 an in-game test; see [beta notes and rollback](docs/V1.0.2_BETA.md).
 
+Beta 2 retains the provisionally repaired menu and replaces the unsuccessful
+Launch native-flag experiment with scoped target-mark opacity control, including
+combat. `[Launch] FadeDurationMs=300` adds an adjustable fade (0 = instant);
+older INIs use 300 when the key is absent. Keep personal INIs. Exact behavior,
+test settings and evidence are recorded in the beta notes; gameplay validation
+is still required.
+
 ### v1.0.1 (published; two issues reopened above)
 
 Branch `test/v1.0.1-clean` retains the Mission Log timer fix, targeted component
@@ -151,6 +158,7 @@ FadeDurationMs=300
 [Launch]
 HideTargetReticle=1
 HideDelayMs=0
+FadeDurationMs=300
 ```
 
 This hides the Launch targeting reticle that remains attached to enemies/targets.
