@@ -14,6 +14,15 @@ A modern dynamic-HUD plugin for **Control** (PC), rebuilt as a native x64 plugin
 
 ## Current status
 
+### v1.0.2 beta 1 - two reported regressions
+
+Branch `beta/v1.0.2-menu-launch-fix` targets the invisible menu step after Continue
+and ineffective Launch `HideTargetReticle` reported in v1.0.1. It rearms the menu
+wrapper per ready context and explicitly notifies Coherent when the native
+reticle visibility flag changes, including F1 restoration. All other accepted
+HUD paths and public defaults are preserved. This is experimental and requires
+an in-game test; see [beta notes and rollback](docs/V1.0.2_BETA.md).
+
 ### v1.0.1 clean test (experimental)
 
 Branch `test/v1.0.1-clean` retains the Mission Log timer fix, targeted component

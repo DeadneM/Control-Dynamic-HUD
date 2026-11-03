@@ -54,6 +54,8 @@ typedef void (WINAPI *UpdateFn)(void*);
 typedef void (WINAPI *MultiLaunchUpdateFn)(void*,u32,void*,void*);
 typedef void (WINAPI *CrosshairUpdateFn)(void*,void*,void*);
 typedef void (WINAPI *HighlightRefreshFn)(void*);
+typedef void* (WINAPI *LaunchSerializeFn)(void*,void*);
+typedef void (WINAPI *ModelChangedFn)(void*,void*,void*);
 typedef void (WINAPI *PageBindFn)(void*,int,const void*,void*);
 typedef void* (WINAPI *MenuFactoryFn)(void*);
 
@@ -128,6 +130,10 @@ static void* g_mainMenuPage = nullptr;
 static bool g_menuBindWindowInstalled = false;
 static bool g_menuBindPreInjected = false;
 static u32 g_menuBindPreInjectAttempts = 0;
+static LaunchSerializeFn g_launchSerialize = nullptr;
+static uptr g_launchReticleModel = 0;
+static u8 g_launchReticleOriginal = 0;
+static bool g_launchReticleOverridden = false;
 
 struct Config {
     bool enabled;
@@ -182,17 +188,17 @@ static constexpr u32 kCoherentSizeOfImage = 0x329000;
 static constexpr u32 kCoherentCheckSum = 0x00323A4A;
 static constexpr uptr kPublicViewVtableRva = 0x270780;
 static constexpr uptr kExecuteScriptRva = 0x82870;
+static constexpr uptr kModelChangedRva = 0x82980;
 static constexpr uptr kViewPageOffset = 0xA8;
 
 static const char kMainMenuPreReadyScript[] = R"JS(
 (function(){
- if(window.__CDH_PRENAV_INSTALLED)return;
- window.__CDH_PRENAV_INSTALLED=true;
- window.__CDH_SHOULD_DOUBLE_NAV=function(){return false;};
  if(typeof engine==='undefined'||!engine||typeof engine.on!=='function'){
   window.__CDH_PRENAV_STATUS='engine-unavailable';
   return;
  }
+ if(window.__CDH_PRENAV_INSTALLED&&engine.on===window.__CDH_PRENAV_ON)return;
+ if(!window.__CDH_SHOULD_DOUBLE_NAV)window.__CDH_SHOULD_DOUBLE_NAV=function(){return false;};
  var originalOn=engine.on;
  engine.on=function(name,callback,context){
   var n=String(name||'');
@@ -211,6 +217,8 @@ static const char kMainMenuPreReadyScript[] = R"JS(
   }
   return originalOn.apply(engine,arguments);
  };
+ window.__CDH_PRENAV_ON=engine.on;
+ window.__CDH_PRENAV_INSTALLED=true;
  window.__CDH_PRENAV_STATUS='wrapped';
 })();
 )JS";
@@ -219,8 +227,8 @@ static const char kMainMenuScript[] = R"JS(
 (function(){
  var CFG=window.__CDH_MAINMENU_CONFIG||{hideNewGame:0,hideMissionSelect:0};
  if(!CFG.hideNewGame&&!CFG.hideMissionSelect)return;
- if(window.__ControlDynamicHUDMainMenu&&window.__ControlDynamicHUDMainMenu.version==='1.0.1-clean')return;
- window.__ControlDynamicHUDMainMenu={version:'1.0.1-clean'};
+ if(window.__ControlDynamicHUDMainMenu&&window.__ControlDynamicHUDMainMenu.version==='1.0.2-beta1')return;
+ window.__ControlDynamicHUDMainMenu={version:'1.0.2-beta1'};
 
  var style=document.getElementById('cdh-mainmenu-style');
  if(!style){style=document.createElement('style');style.id='cdh-mainmenu-style';(document.head||document.documentElement).appendChild(style);}
@@ -378,6 +386,15 @@ static const char kMainMenuScript[] = R"JS(
    row.setAttribute('tabindex','-1');
   }
  }
+ function selectedState(e){
+  var names=['aria-selected','data-selected','data-active','data-focused'];
+  for(var i=0;i<names.length;i++){
+   var v=norm(e.getAttribute&&e.getAttribute(names[i]));
+   if(v==='true'||v==='1')return true;
+  }
+  var c=norm(e.getAttribute&&e.getAttribute('class'));
+  return /(^|\s)(selected|highlight|highlighted|focused|current|active)(\s|$)/.test(c);
+ }
  function looksSelected(row){
   if(!row)return false;
   var a=document.activeElement;
@@ -385,11 +402,7 @@ static const char kMainMenuScript[] = R"JS(
   var nodes=[row],q=row.querySelectorAll?row.querySelectorAll('*'):[];
   for(var i=0;i<q.length&&i<32;i++)nodes.push(q[i]);
   for(var j=0;j<nodes.length;j++){
-   var e=nodes[j],sg=sigFor(e)+' '+norm(e.getAttribute&&e.getAttribute('aria-selected'))+
-    ' '+norm(e.getAttribute&&e.getAttribute('data-selected'))+
-    ' '+norm(e.getAttribute&&e.getAttribute('data-active'))+
-    ' '+norm(e.getAttribute&&e.getAttribute('data-focused'));
-   if(/selected|highlight|focused|current| active | true /.test(sg))return true;
+   if(selectedState(nodes[j]))return true;
   }
   return false;
  }
@@ -407,11 +420,7 @@ static const char kMainMenuScript[] = R"JS(
    var all=document.body?document.body.querySelectorAll('*'):[];
    for(var j=0;j<all.length&&j<512;j++){
     var e=all[j];if(e===row||(row.contains&&row.contains(e)))continue;
-    var sg=sigFor(e)+' '+norm(e.getAttribute&&e.getAttribute('aria-selected'))+
-      ' '+norm(e.getAttribute&&e.getAttribute('data-selected'))+
-      ' '+norm(e.getAttribute&&e.getAttribute('data-active'))+
-      ' '+norm(e.getAttribute&&e.getAttribute('data-focused'));
-    if(!/selected|highlight|focused|current| active | true /.test(sg))continue;
+    if(!selectedState(e))continue;
     var er;try{er=e.getBoundingClientRect();}catch(x2){continue;}
     var cy=er.top+er.height*0.5;
     if(er.width>1&&er.height>1&&cy>=rr.top-3&&cy<=rr.bottom+3)return true;
@@ -475,7 +484,7 @@ static const char kSuiteScript[] = R"JS(
   expeditionEnabled:1,expeditionHideDelayMs:2000,expeditionFadeDurationMs:300
  };
  var CDH=window.__ControlDynamicHUDSuite={
-  version:'1.0.1-clean',health:false,mission:false,crosshair:false,expedition:false,
+  version:'1.0.2-beta1',health:false,mission:false,crosshair:false,expedition:false,
   hudVisible:true,active:true,lastError:'',forceVisible:false
  };
  var MODE={COMBAT:0,ADVENTURING:1,STORY:2,ACTION:3,EXAMINE:4,HIDDEN:5};
@@ -1886,38 +1895,70 @@ static void restore_update_hook(){
     g_updateEntry=nullptr;
 }
 
+static bool locate_launch_model_serializer(void* exe){
+    if(!g_cfg.launchHideReticle)return true;
+    // Exact LaunchIndicator publication tail, shared by the audited DX11/DX12.
+    // Resolve its serializer call rather than hard-code an executable RVA.
+    static const u8 pat[]={0x45,0x84,0xFF,0x74,0x21,0x48,0x8B,0x7D,0x98,
+      0x48,0x8B,0x1F,0x49,0x8B,0xD6,0x48,0x8B,0xCF,0xE8,0,0,0,0,
+      0x4C,0x8B,0xC0,0x49,0x8B,0xD6,0x48,0x8B,0xCF,0xFF,0x93,0x28,0x02,0,0};
+    static const char mask[]="xxxxxxxxxxxxxxxxxxx????xxxxxxxxxxxxxxx";
+    uptr matches[2]={0,0};
+    u32 n=scan_masked_all(exe,pat,mask,sizeof(pat),matches,2);
+    log_cstr("Launch model publication signature matches: ");log_dec(n);log_bytes("\r\n",2);
+    if(n!=1)return false;
+    uptr target=matches[0]+23+(s64)*(s32*)(matches[0]+19);
+    u8* text=nullptr;u32 size=0;
+    static const u8 head[]={0x40,0x56,0x48,0x83,0xEC,0x20,0x48,0x8B,0xF2,
+      0x48,0x85,0xD2,0x75,0x08,0x33,0xC0,0x48,0x83,0xC4,0x20,0x5E,0xC3};
+    if(!get_text(exe,text,size)||target<(uptr)text||target+sizeof(head)>(uptr)text+size)return false;
+    for(usize i=0;i<sizeof(head);++i)if(rd8((void*)(target+i))!=head[i])return false;
+    g_launchSerialize=(LaunchSerializeFn)target;
+    log_line("Launch serializer verified; reticle changes will be published to Coherent.");
+    return true;
+}
+
 static void native_hide_launch_reticles(void* hud,u64 now){
-    if(!hud)return;
+    if(!hud||!g_cfg.launchHideReticle||!g_launchSerialize||!g_pageGetView||!g_coherentBase)return;
     uptr launch=rdptr((u8*)hud+0x168);
     if(!launch)return;
-
+    if(launch!=g_launchReticleModel){
+        // Never dereference the previous model after a HUD recreation.
+        g_launchReticleModel=launch;g_launchReticleOverridden=false;g_launchReticleSinceMs=0;
+    }
+    void* view=g_pageGetView(hud);
+    uptr vt=view?rdptr(view):0;
+    if(vt!=(uptr)g_coherentBase+kPublicViewVtableRva)return;
+    uptr notify=rdptr((void*)(vt+69u*sizeof(uptr)));
+    if(notify!=(uptr)g_coherentBase+kModelChangedRva)return;
+    u8* hidden=(u8*)(launch+0x19);
     bool forced=g_forceHudUntilMs&&now<g_forceHudUntilMs;
+    u8 desired=*hidden;
     if(forced){
         g_launchReticleSinceMs=0;
-        return;
-    }
-
-    // LaunchIndicator is the first object in the Launch block.
-    // m_bIsReticuleHidden is offset +0x19.
-    if(g_cfg.launchHideReticle){
-        u8* hidden=(u8*)(launch+0x19);
-        if(*hidden==0){
-            if(!g_launchReticleSinceMs)g_launchReticleSinceMs=now;
-            u64 elapsed=now>=g_launchReticleSinceMs?now-g_launchReticleSinceMs:0;
-            if(elapsed>=g_cfg.launchHideDelayMs){
-                *hidden=1;
-                if(!g_launchReticleLogOnce){
-                    log_line("Launch target reticle forced hidden through LaunchIndicator.m_bIsReticuleHidden.");
-                    g_launchReticleLogOnce=true;
-                }
-            }
-        }else{
-            g_launchReticleSinceMs=0;
+        if(g_launchReticleOverridden)desired=g_launchReticleOriginal;
+    }else if(!g_launchReticleOverridden){
+        if(!g_launchReticleSinceMs)g_launchReticleSinceMs=now;
+        if(now>=g_launchReticleSinceMs&&now-g_launchReticleSinceMs>=g_cfg.launchHideDelayMs){
+            g_launchReticleOriginal=*hidden;
+            g_launchReticleOverridden=true;
+            desired=1;
         }
     }else{
-        g_launchReticleSinceMs=0;
+        desired=1;
     }
-
+    if(desired!=*hidden){
+        *hidden=desired;
+        // Use the game's serializer and the verified public View notification,
+        // matching the native Launch updater. A raw byte write is not a UI update.
+        void* value=g_launchSerialize(view,(void*)launch);
+        ((ModelChangedFn)notify)(view,(void*)launch,value);
+        if(!g_launchReticleLogOnce){
+            log_line("Launch reticle override published through the verified Coherent model path.");
+            g_launchReticleLogOnce=true;
+        }
+    }
+    if(forced)g_launchReticleOverridden=false;
 }
 
 
@@ -2054,6 +2095,11 @@ static bool install_menu_page_bind_iat_hook(void* ui,uptr originalReady){
 
 static void WINAPI HookMenuReady(void* self){
     u32 n=++g_menuReadyCalls;
+    // A page may get a fresh JS/engine context without a new native factory call.
+    // Rearm inside each ready callback; preserve the validated Page::bind timing.
+    g_mainMenuPage=self;
+    g_menuBindPreInjected=false;
+    g_menuBindPreInjectAttempts=0;
 
     // V1.0Z normally injects the engine.on wrapper from HookPageBind, after the
     // menu's visual/base setup has run. If the bind IAT hook was unavailable,
@@ -2258,7 +2304,7 @@ static bool install_hook(WinApi& api,uptr target){
     DWORD dummy=0;api.VirtualProtect((void*)target,stolen,old,&dummy);api.FlushInstructionCache((HANDLE)(uptr)-1,(void*)target,stolen);return true;
 }
 
-extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 129;}
+extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 130;}
 extern "C" __declspec(dllexport) void* CDH_RelocAnchor=(void*)&CDH_Version;
 
 extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
@@ -2270,7 +2316,7 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     load_config(api);g_showHudVk=parse_vk(g_cfg.showHudKey);build_config_script();
     g_WriteFile=api.WriteFile;g_log=api.CreateFileW(L"plugins\\ControlDynamicHUD.log",GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
     if(!g_log||(uptr)g_log==INVALID_HANDLE_VALUE_U)return 1;
-    log_line("Control Dynamic HUD v1.0.1 CLEAN TEST");log_line("Mode: v1.0.0 base + idempotent Mission Log + targeted heartbeat + HUD model fallback");
+    log_line("Control Dynamic HUD v1.0.2 BETA 1 MENU/LAUNCH");log_line("Mode: v1.0.1 base + per-ready menu wrapper + explicit Launch model notification");
     log_cstr("Config: Enabled=");log_dec(g_cfg.enabled?1:0);log_cstr(" ShowHUDKey=");log_cstr(g_cfg.showHudKey);log_cstr(" VK=");log_hex(g_showHudVk);log_cstr(" ShowHUDDurationMs=");log_dec(g_cfg.showHudDurationMs);
     log_cstr(" HideNewGame=");log_dec(g_cfg.mainMenuHideNewGame?1:0);
     log_cstr(" HideMissionSelect=");log_dec(g_cfg.mainMenuHideMissionSelect?1:0);
@@ -2309,6 +2355,8 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
         log_line("FAIL-OPEN: unsupported CoherentUIGT build; no hook installed.");
         return 1;
     }
+    if(!locate_launch_model_serializer(exe))
+        log_line("FAIL-OPEN: Launch model publication path unavailable; target reticle override disabled.");
     u32 count=0;uptr factory=scan_factory(exe,count);log_cstr("HUD factory signature matches: ");log_dec(count);log_cstr(" first=");log_hex(factory);log_bytes("\r\n",2);
     if(count!=1||!factory){log_line("FAIL-OPEN: unique HUD factory not found; no hook installed.");return 1;}
     if(!g_pageGetView){log_line("FAIL-OPEN: ui::Page::getView export not found; no hook installed.");return 1;}

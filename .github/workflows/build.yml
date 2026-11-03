@@ -17,6 +17,9 @@ jobs:
       - name: Embedded HUD regression checks
         run: node tests/hud-runtime.cjs
 
+      - name: Embedded menu regression checks
+        run: node tests/menu-runtime.cjs
+
       - name: Build x64 plugin
         shell: pwsh
         run: ./build/build.ps1

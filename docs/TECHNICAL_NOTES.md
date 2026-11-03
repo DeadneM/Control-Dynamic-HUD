@@ -1,5 +1,11 @@
 # Technical Notes
 
+## v1.0.2 beta 1 (2026-11-03)
+
+Two user-reported regressions reopened the menu ghost and Launch target-reticle
+work. See [V1.0.2_BETA.md](V1.0.2_BETA.md) for installation/log evidence, static
+DX11/DX12 model publication ABI, changes, acceptance, rollback and cumulative TODO.
+
 ## v1.0.1 clean continuation (2026-11-01)
 
 See [V1.0.1_AUDIT.md](V1.0.1_AUDIT.md) for the cumulative delta audit,
