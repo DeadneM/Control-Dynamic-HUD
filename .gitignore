@@ -8,5 +8,6 @@ delivery/*
 !delivery/Control_Dynamic_HUD_v1.0.1-clean-test.zip
 !delivery/Control_Dynamic_HUD_v1.0.2-beta1.zip
 !delivery/Control_Dynamic_HUD_v1.0.2-beta2.zip
+!delivery/Control_Dynamic_HUD_v1.0.2.zip
 .analysis-libs/
 analysis/
