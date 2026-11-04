@@ -33,7 +33,6 @@ jobs:
           New-Item -ItemType Directory -Force dist/plugins | Out-Null
           Copy-Item build-out/ControlDynamicHUD.dll dist/plugins/
           Copy-Item config/ControlDynamicHUD.ini dist/plugins/
-          Copy-Item README.md dist/
           Compress-Archive -Path dist/* -DestinationPath Control_Dynamic_HUD_CI.zip -Force
 
       - uses: actions/upload-artifact@v4

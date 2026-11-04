@@ -14,21 +14,21 @@ A modern dynamic-HUD plugin for **Control** (PC), rebuilt as a native x64 plugin
 
 ## Current status
 
-### v1.0.2 beta 1 - two reported regressions
+### v1.0.2
 
-Branch `beta/v1.0.2-menu-launch-fix` targets the invisible menu step after Continue
-and ineffective Launch `HideTargetReticle` reported in v1.0.1. It rearms the menu
-wrapper per ready context and explicitly notifies Coherent when the native
-reticle visibility flag changes, including F1 restoration. All other accepted
-HUD paths and public defaults are preserved. This is experimental and requires
-an in-game test; see [beta notes and rollback](docs/V1.0.2_BETA.md).
+Based on v1.0.2 beta 2, tested and approved in-game by the project owner on
+2026-11-04. Fixes the invisible menu step after Continue and Launch target-mark
+hiding in combat. Adds configurable `[Launch] FadeDurationMs=300` (0 = instant),
+while preserving the validated HUD, F1, crosshair dot and independent
+Launch/MultiLaunch icon/outline behavior.
 
-Beta 2 retains the provisionally repaired menu and replaces the unsuccessful
-Launch native-flag experiment with scoped target-mark opacity control, including
-combat. `[Launch] FadeDurationMs=300` adds an adjustable fade (0 = instant);
-older INIs use 300 when the key is absent. Keep personal INIs. Exact behavior,
-test settings and evidence are recorded in the beta notes; gameplay validation
-is still required.
+The release ZIP contains only `plugins/ControlDynamicHUD.dll` and
+`plugins/ControlDynamicHUD.ini`. Keep your personal INI when updating; missing
+Launch FadeDurationMs uses 300ms. Public defaults remain HideNewGame=0,
+HideMissionSelect=0 and ShowDiagnostics=0.
+
+See [release evidence](docs/V1.0.2_RELEASE.md) and the cumulative
+[beta history](docs/V1.0.2_BETA.md).
 
 ### v1.0.1 (published; two issues reopened above)
 

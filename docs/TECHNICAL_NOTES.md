@@ -1,5 +1,12 @@
 # Technical Notes
 
+## v1.0.2 release (2026-11-04)
+
+The user tested and approved beta 2, then authorized release publication with a
+DLL/INI-only ZIP. Its functionality is the new validated baseline. Release
+preparation updates version/log labels and packaging only; evidence and hashes
+are recorded in [V1.0.2_RELEASE.md](V1.0.2_RELEASE.md).
+
 ## v1.0.2 beta 1 (2026-11-03)
 
 Two user-reported regressions reopened the menu ghost and Launch target-reticle
