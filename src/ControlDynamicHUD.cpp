@@ -72,11 +72,9 @@ static FnGetAsyncKeyState g_GetAsyncKeyState = nullptr;
 static FnGetTickCount64 g_GetTickCount64 = nullptr;
 static u32 g_showHudVk = 0;
 static u64 g_forceHudUntilMs = 0;
-static u64 g_launchReticleSinceMs = 0;
 static u64 g_multiLaunchActiveSinceMs = 0;
 static bool g_multiLaunchSlotActive[3] = {false,false,false};
 static bool g_multiLaunchPatchEnabled = false;
-static bool g_launchReticleLogOnce = false;
 static bool g_multiLaunchReticleLogOnce = false;
 static uptr* g_interfaceOptionsPtrSlot = nullptr;
 static bool g_interfaceOptionsSaved = false;
@@ -164,6 +162,7 @@ struct Config {
 
     bool launchHideReticle;
     u32 launchHideDelayMs;
+    u32 launchFadeDurationMs;
 
     bool multiLaunchHideObjectIndicators; // legacy compatibility
     bool multiLaunchHideIcon;
@@ -186,13 +185,12 @@ static constexpr uptr kViewPageOffset = 0xA8;
 
 static const char kMainMenuPreReadyScript[] = R"JS(
 (function(){
- if(window.__CDH_PRENAV_INSTALLED)return;
- window.__CDH_PRENAV_INSTALLED=true;
- window.__CDH_SHOULD_DOUBLE_NAV=function(){return false;};
  if(typeof engine==='undefined'||!engine||typeof engine.on!=='function'){
   window.__CDH_PRENAV_STATUS='engine-unavailable';
   return;
  }
+ if(window.__CDH_PRENAV_INSTALLED&&engine.on===window.__CDH_PRENAV_ON)return;
+ if(!window.__CDH_SHOULD_DOUBLE_NAV)window.__CDH_SHOULD_DOUBLE_NAV=function(){return false;};
  var originalOn=engine.on;
  engine.on=function(name,callback,context){
   var n=String(name||'');
@@ -211,6 +209,8 @@ static const char kMainMenuPreReadyScript[] = R"JS(
   }
   return originalOn.apply(engine,arguments);
  };
+ window.__CDH_PRENAV_ON=engine.on;
+ window.__CDH_PRENAV_INSTALLED=true;
  window.__CDH_PRENAV_STATUS='wrapped';
 })();
 )JS";
@@ -219,8 +219,8 @@ static const char kMainMenuScript[] = R"JS(
 (function(){
  var CFG=window.__CDH_MAINMENU_CONFIG||{hideNewGame:0,hideMissionSelect:0};
  if(!CFG.hideNewGame&&!CFG.hideMissionSelect)return;
- if(window.__ControlDynamicHUDMainMenu&&window.__ControlDynamicHUDMainMenu.version==='1.0.1-clean')return;
- window.__ControlDynamicHUDMainMenu={version:'1.0.1-clean'};
+ if(window.__ControlDynamicHUDMainMenu&&window.__ControlDynamicHUDMainMenu.version==='1.0.2')return;
+ window.__ControlDynamicHUDMainMenu={version:'1.0.2'};
 
  var style=document.getElementById('cdh-mainmenu-style');
  if(!style){style=document.createElement('style');style.id='cdh-mainmenu-style';(document.head||document.documentElement).appendChild(style);}
@@ -378,6 +378,15 @@ static const char kMainMenuScript[] = R"JS(
    row.setAttribute('tabindex','-1');
   }
  }
+ function selectedState(e){
+  var names=['aria-selected','data-selected','data-active','data-focused'];
+  for(var i=0;i<names.length;i++){
+   var v=norm(e.getAttribute&&e.getAttribute(names[i]));
+   if(v==='true'||v==='1')return true;
+  }
+  var c=norm(e.getAttribute&&e.getAttribute('class'));
+  return /(^|\s)(selected|highlight|highlighted|focused|current|active)(\s|$)/.test(c);
+ }
  function looksSelected(row){
   if(!row)return false;
   var a=document.activeElement;
@@ -385,11 +394,7 @@ static const char kMainMenuScript[] = R"JS(
   var nodes=[row],q=row.querySelectorAll?row.querySelectorAll('*'):[];
   for(var i=0;i<q.length&&i<32;i++)nodes.push(q[i]);
   for(var j=0;j<nodes.length;j++){
-   var e=nodes[j],sg=sigFor(e)+' '+norm(e.getAttribute&&e.getAttribute('aria-selected'))+
-    ' '+norm(e.getAttribute&&e.getAttribute('data-selected'))+
-    ' '+norm(e.getAttribute&&e.getAttribute('data-active'))+
-    ' '+norm(e.getAttribute&&e.getAttribute('data-focused'));
-   if(/selected|highlight|focused|current| active | true /.test(sg))return true;
+   if(selectedState(nodes[j]))return true;
   }
   return false;
  }
@@ -407,11 +412,7 @@ static const char kMainMenuScript[] = R"JS(
    var all=document.body?document.body.querySelectorAll('*'):[];
    for(var j=0;j<all.length&&j<512;j++){
     var e=all[j];if(e===row||(row.contains&&row.contains(e)))continue;
-    var sg=sigFor(e)+' '+norm(e.getAttribute&&e.getAttribute('aria-selected'))+
-      ' '+norm(e.getAttribute&&e.getAttribute('data-selected'))+
-      ' '+norm(e.getAttribute&&e.getAttribute('data-active'))+
-      ' '+norm(e.getAttribute&&e.getAttribute('data-focused'));
-    if(!/selected|highlight|focused|current| active | true /.test(sg))continue;
+    if(!selectedState(e))continue;
     var er;try{er=e.getBoundingClientRect();}catch(x2){continue;}
     var cy=er.top+er.height*0.5;
     if(er.width>1&&er.height>1&&cy>=rr.top-3&&cy<=rr.bottom+3)return true;
@@ -472,10 +473,11 @@ static const char kSuiteScript[] = R"JS(
   missionEnabled:1,missionInitialHideDelayMs:2000,missionAfterMapCloseHideDelayMs:3000,missionUpdateVisibleMs:7000,missionFadeDurationMs:300,missionShowInMap:1,
   crosshairEnabled:1,crosshairHideDelayMs:1000,crosshairFadeDurationMs:300,
   crosshairDotEnabled:1,crosshairDotHideDelayMs:0,
+  launchHideReticle:1,launchHideDelayMs:0,launchFadeDurationMs:300,
   expeditionEnabled:1,expeditionHideDelayMs:2000,expeditionFadeDurationMs:300
  };
  var CDH=window.__ControlDynamicHUDSuite={
-  version:'1.0.1-clean',health:false,mission:false,crosshair:false,expedition:false,
+  version:'1.0.2',health:false,mission:false,crosshair:false,expedition:false,
   hudVisible:true,active:true,lastError:'',forceVisible:false
  };
  var MODE={COMBAT:0,ADVENTURING:1,STORY:2,ACTION:3,EXAMINE:4,HIDDEN:5};
@@ -485,6 +487,7 @@ static const char kSuiteScript[] = R"JS(
  var cross={el:null,timer:0,shown:true,hideLatched:false};
  var dot={root:null,el:null,pseudo:'',timer:0,hidden:false,obs:null,marks:[]};
  var expedition={el:null,timer:0,shown:true};
+ var launchTargets=[];
  var resumeTimer=0,heartbeat=0,diagTimer=0,rebindTimer=0,forceTimer=0,forceUntil=0;
 
  function isForced(){return forceUntil>Date.now();}
@@ -508,6 +511,8 @@ static const char kSuiteScript[] = R"JS(
   +'[data-cdh-dot-pseudo-before="1"]::before,[data-cdh-dot-pseudo-after="1"]::after{display:none!important;content:none!important;opacity:0!important;visibility:hidden!important;}'
   +'.expedition-hud>.expedition-mod-group{transition:opacity '+CFG.expeditionFadeDurationMs+'ms var(--easing);}'
   +'.expedition-hud>.expedition-mod-group[data-cdh-expedition-hidden="1"]{opacity:0!important;}'
+  +'.launch-slam-target[data-cdh-launch-target="1"]{transition:opacity '+CFG.launchFadeDurationMs+'ms var(--easing)!important;}'
+  +'.launch-slam-target[data-cdh-launch-target="1"][data-cdh-launch-hidden="1"]{opacity:0!important;}'
   +'#cdh-diagnostic{position:absolute;left:18px;top:18px;z-index:2147483647;'
   +'font:15px monospace;color:white;background:rgba(0,0,0,.72);padding:10px 12px;'
   +'pointer-events:none;white-space:pre;line-height:1.25;max-width:760px;}';
@@ -830,11 +835,71 @@ static const char kSuiteScript[] = R"JS(
  }
 
 
+ // Only the three Launch target models share this component with Ground Slam.
+ // Identify the model binding or its numbered Launch background, never all targets.
+ function isLaunchTarget(el){
+  var binding=(el.getAttribute('data-bind-style-transform2d')||'')+' '+(el.getAttribute('data-bind-class-toggle')||'');
+  if(binding.indexOf('g_slamIndicator')>=0)return false;
+  if(/\bg_multiLaunchIndicator[123]\b/.test(binding))return true;
+  var bg=el.querySelector('.launch-slam-target__background');
+  if(!bg)return false;
+  var childBinding=bg.getAttribute('data-bind-if')||'';
+  if(childBinding.indexOf('g_slamIndicator')>=0)return false;
+  if(/\bg_multiLaunchIndicator[123]\b/.test(childBinding))return true;
+  return bg.classList.contains('launch-slam-target__background--first')||
+   bg.classList.contains('launch-slam-target__background--second')||
+   bg.classList.contains('launch-slam-target__background--third');
+ }
+ function setLaunchHidden(state,hidden){
+  if(!state.el||!state.el.isConnected)return;
+  var value=hidden?'1':'0';
+  if(state.el.getAttribute('data-cdh-launch-hidden')!==value)state.el.setAttribute('data-cdh-launch-hidden',value);
+ }
+ function updateLaunchTarget(state){
+  if(!active||!state.el||!state.el.isConnected)return;
+  var shown=state.el.classList.contains('launch-slam-target--shown');
+  if(isForced()){
+   clearTimer(state);setLaunchHidden(state,false);state.visible=shown;return;
+  }
+  if(CFG.launchHideDelayMs===0){
+   clearTimer(state);setLaunchHidden(state,true);state.visible=shown;return;
+  }
+  if(!shown){
+   clearTimer(state);setLaunchHidden(state,false);state.visible=false;return;
+  }
+  if(!state.visible){
+   state.visible=true;clearTimer(state);setLaunchHidden(state,false);
+   state.timer=setTimeout(function(){state.timer=0;if(active&&!isForced())setLaunchHidden(state,true);},CFG.launchHideDelayMs);
+  }
+ }
+ function releaseLaunchTarget(state){
+  clearTimer(state);disconnectObserver(state);
+  if(state.el&&state.el.isConnected){state.el.removeAttribute('data-cdh-launch-target');state.el.removeAttribute('data-cdh-launch-hidden');}
+ }
+ function bindLaunchTargets(){
+  if(!active||!CFG.launchHideReticle)return;
+  var roots=document.querySelectorAll('.launch-slam-target'),next=[];
+  for(var i=0;i<roots.length;i++){
+   var el=roots[i];if(!isLaunchTarget(el))continue;
+   var state=null;
+   for(var j=0;j<launchTargets.length;j++)if(launchTargets[j].el===el){state=launchTargets[j];break;}
+   if(!state){
+    state={el:el,timer:0,obs:null,visible:false};
+    el.setAttribute('data-cdh-launch-target','1');
+    (function(s){s.obs=new MutationObserver(function(){updateLaunchTarget(s);});})(state);
+    state.obs.observe(el,{attributes:true,attributeFilter:['class']});
+   }
+   updateLaunchTarget(state);next.push(state);
+  }
+  for(var k=0;k<launchTargets.length;k++)if(next.indexOf(launchTargets[k])<0)releaseLaunchTarget(launchTargets[k]);
+  launchTargets=next;CDH.launchReticle=next.length>0;
+ }
+
  function rebind(){
   rebindTimer=0;
   if(!active)return;
   addStyle();
-  bindHealth();bindMission();bindCrosshair();bindCrosshairDot();bindExpedition();updateDiag();
+  bindHealth();bindMission();bindCrosshair();bindCrosshairDot();bindExpedition();bindLaunchTargets();updateDiag();
  }
  function scheduleRebind(ms){
   if(!active||rebindTimer)return;
@@ -849,6 +914,8 @@ static const char kSuiteScript[] = R"JS(
  }
 
  function suspendHud(){
+  for(var i=0;i<launchTargets.length;i++)releaseLaunchTarget(launchTargets[i]);
+  launchTargets=[];CDH.launchReticle=false;
   if(resumeTimer){clearTimeout(resumeTimer);resumeTimer=0;}
   if(rebindTimer){clearTimeout(rebindTimer);rebindTimer=0;}
   clearTimer(hp);clearTimer(mission);clearTimer(cross);clearTimer(dot);clearTimer(expedition);
@@ -875,11 +942,13 @@ static const char kSuiteScript[] = R"JS(
   if(CFG.crosshairEnabled&&(!cross.el||!cross.el.isConnected))bindCrosshair();
   if(CFG.crosshairDotEnabled&&(!dot.root||!dot.root.isConnected))bindCrosshairDot();
   if(CFG.expeditionEnabled&&(!expedition.el||!expedition.el.isConnected))bindExpedition();
+  bindLaunchTargets();
  }
 
  function forceShowHUD(){
   if(!active)return;
   forceUntil=Date.now()+CFG.showHudDurationMs;CDH.forceVisible=true;
+  for(var i=0;i<launchTargets.length;i++)updateLaunchTarget(launchTargets[i]);
   clearTimer(hp);clearTimer(mission);clearTimer(cross);clearTimer(dot);clearTimer(expedition);
   if(hp.bar)setHpHidden(false);
   if(mission.log)missionShow();
@@ -890,6 +959,7 @@ static const char kSuiteScript[] = R"JS(
   forceTimer=setTimeout(function(){
    forceTimer=0;forceUntil=0;CDH.forceVisible=false;
    if(!active)return;
+   for(var i=0;i<launchTargets.length;i++){launchTargets[i].visible=false;updateLaunchTarget(launchTargets[i]);}
    cross.hideLatched=false;
    updateHealth();onMapChanged();updateCrosshair();bindCrosshairDot();scheduleCrosshairDotHide();scheduleExpeditionHide();
   },CFG.showHudDurationMs);
@@ -902,7 +972,7 @@ static const char kSuiteScript[] = R"JS(
   if(!CFG.diagnostics)return;
   var p=document.getElementById('cdh-diagnostic');if(!p)return;
   p.textContent=
-   'Control Dynamic HUD v1.0.1 clean test\n'
+   'Control Dynamic HUD v1.0.2\n'
   +'HUD '+yes(hudVisible)+' | active '+yes(active)+' | force '+yes(isForced())+' | aim '+yes(isAiming)+' | key '+CFG.showHudKey+'\n'
   +'health '+yes(CDH.health)+' | mission '+yes(CDH.mission)+' | crosshair '+yes(CDH.crosshair)+' | dot '+yes(CDH.crosshairDot)+' | expedition '+yes(CDH.expedition)+'\n'
   +'ammo '+yes(!!document.querySelector('.awesome-crosshair--ammo'))+' | enemyHP '+yes(!!document.querySelector('.enemy-health-container'))+' | energy '+yes(!!document.querySelector('.ability-resource-bar'))+'\n'
@@ -1128,6 +1198,7 @@ static void load_config(WinApi& a){
 
     g_cfg.launchHideReticle=a.GetPrivateProfileIntA("Launch","HideTargetReticle",1,ini)!=0;
     g_cfg.launchHideDelayMs=clamp_u32(a.GetPrivateProfileIntA("Launch","HideDelayMs",0,ini),0,60000);
+    g_cfg.launchFadeDurationMs=clamp_u32(a.GetPrivateProfileIntA("Launch","FadeDurationMs",300,ini),0,10000);
 
     s32 legacyMultiLaunch=(s32)a.GetPrivateProfileIntA("MultiLaunch","HideObjectIndicators",-1,ini);
     s32 splitDefault=legacyMultiLaunch>=0?legacyMultiLaunch:1;
@@ -1159,6 +1230,9 @@ static void build_config_script(){
     p=app(p,end,",crosshairFadeDurationMs:");p=app_u32(p,end,g_cfg.crosshairFadeDurationMs);
     p=app(p,end,",crosshairDotEnabled:");p=app_u32(p,end,g_cfg.crosshairDotEnabled?1:0);
     p=app(p,end,",crosshairDotHideDelayMs:");p=app_u32(p,end,g_cfg.crosshairDotHideDelayMs);
+    p=app(p,end,",launchHideReticle:");p=app_u32(p,end,g_cfg.launchHideReticle?1:0);
+    p=app(p,end,",launchHideDelayMs:");p=app_u32(p,end,g_cfg.launchHideDelayMs);
+    p=app(p,end,",launchFadeDurationMs:");p=app_u32(p,end,g_cfg.launchFadeDurationMs);
     p=app(p,end,",expeditionEnabled:");p=app_u32(p,end,g_cfg.expeditionEnabled?1:0);
     p=app(p,end,",expeditionHideDelayMs:");p=app_u32(p,end,g_cfg.expeditionHideDelayMs);
     p=app(p,end,",expeditionFadeDurationMs:");p=app_u32(p,end,g_cfg.expeditionFadeDurationMs);
@@ -1886,41 +1960,6 @@ static void restore_update_hook(){
     g_updateEntry=nullptr;
 }
 
-static void native_hide_launch_reticles(void* hud,u64 now){
-    if(!hud)return;
-    uptr launch=rdptr((u8*)hud+0x168);
-    if(!launch)return;
-
-    bool forced=g_forceHudUntilMs&&now<g_forceHudUntilMs;
-    if(forced){
-        g_launchReticleSinceMs=0;
-        return;
-    }
-
-    // LaunchIndicator is the first object in the Launch block.
-    // m_bIsReticuleHidden is offset +0x19.
-    if(g_cfg.launchHideReticle){
-        u8* hidden=(u8*)(launch+0x19);
-        if(*hidden==0){
-            if(!g_launchReticleSinceMs)g_launchReticleSinceMs=now;
-            u64 elapsed=now>=g_launchReticleSinceMs?now-g_launchReticleSinceMs:0;
-            if(elapsed>=g_cfg.launchHideDelayMs){
-                *hidden=1;
-                if(!g_launchReticleLogOnce){
-                    log_line("Launch target reticle forced hidden through LaunchIndicator.m_bIsReticuleHidden.");
-                    g_launchReticleLogOnce=true;
-                }
-            }
-        }else{
-            g_launchReticleSinceMs=0;
-        }
-    }else{
-        g_launchReticleSinceMs=0;
-    }
-
-}
-
-
 static void WINAPI HookUpdate(void* self){
     if(g_originalUpdate)g_originalUpdate(self);
 
@@ -1956,7 +1995,6 @@ static void WINAPI HookUpdate(void* self){
     if(g_cfg.multiLaunchHideOutline)set_launch_outline_hidden(!forcedNow);
 
     g_forceHudWasActive=forcedNow;
-    native_hide_launch_reticles(self,now);
 }
 
 static void restore_menu_ready_hook(){
@@ -2054,6 +2092,11 @@ static bool install_menu_page_bind_iat_hook(void* ui,uptr originalReady){
 
 static void WINAPI HookMenuReady(void* self){
     u32 n=++g_menuReadyCalls;
+    // A page may get a fresh JS/engine context without a new native factory call.
+    // Rearm inside each ready callback; preserve the validated Page::bind timing.
+    g_mainMenuPage=self;
+    g_menuBindPreInjected=false;
+    g_menuBindPreInjectAttempts=0;
 
     // V1.0Z normally injects the engine.on wrapper from HookPageBind, after the
     // menu's visual/base setup has run. If the bind IAT hook was unavailable,
@@ -2258,7 +2301,7 @@ static bool install_hook(WinApi& api,uptr target){
     DWORD dummy=0;api.VirtualProtect((void*)target,stolen,old,&dummy);api.FlushInstructionCache((HANDLE)(uptr)-1,(void*)target,stolen);return true;
 }
 
-extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 129;}
+extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 132;}
 extern "C" __declspec(dllexport) void* CDH_RelocAnchor=(void*)&CDH_Version;
 
 extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
@@ -2270,10 +2313,13 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     load_config(api);g_showHudVk=parse_vk(g_cfg.showHudKey);build_config_script();
     g_WriteFile=api.WriteFile;g_log=api.CreateFileW(L"plugins\\ControlDynamicHUD.log",GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
     if(!g_log||(uptr)g_log==INVALID_HANDLE_VALUE_U)return 1;
-    log_line("Control Dynamic HUD v1.0.1 CLEAN TEST");log_line("Mode: v1.0.0 base + idempotent Mission Log + targeted heartbeat + HUD model fallback");
+    log_line("Control Dynamic HUD v1.0.2");log_line("Mode: validated menu navigation + scoped Launch target visibility/fade");
     log_cstr("Config: Enabled=");log_dec(g_cfg.enabled?1:0);log_cstr(" ShowHUDKey=");log_cstr(g_cfg.showHudKey);log_cstr(" VK=");log_hex(g_showHudVk);log_cstr(" ShowHUDDurationMs=");log_dec(g_cfg.showHudDurationMs);
     log_cstr(" HideNewGame=");log_dec(g_cfg.mainMenuHideNewGame?1:0);
     log_cstr(" HideMissionSelect=");log_dec(g_cfg.mainMenuHideMissionSelect?1:0);
+    log_cstr(" LaunchHideTargetReticle=");log_dec(g_cfg.launchHideReticle?1:0);
+    log_cstr(" LaunchHideDelayMs=");log_dec(g_cfg.launchHideDelayMs);
+    log_cstr(" LaunchFadeDurationMs=");log_dec(g_cfg.launchFadeDurationMs);
     log_cstr(" MultiLaunchHideIcon=");log_dec(g_cfg.multiLaunchHideIcon?1:0);
     log_cstr(" MultiLaunchHideOutline=");log_dec(g_cfg.multiLaunchHideOutline?1:0);
     log_bytes("\r\n",2);

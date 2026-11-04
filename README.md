@@ -14,18 +14,32 @@ A modern dynamic-HUD plugin for **Control** (PC), rebuilt as a native x64 plugin
 
 ## Current status
 
-### v1.0.1
+### v1.0.2
+
+Based on v1.0.2 beta 2, tested and approved in-game by the project owner on
+2026-11-04. Fixes the invisible menu step after Continue and Launch target-mark
+hiding in combat. Adds configurable `[Launch] FadeDurationMs=300` (0 = instant),
+while preserving the validated HUD, F1, crosshair dot and independent
+Launch/MultiLaunch icon/outline behavior.
+
+The release ZIP contains only `plugins/ControlDynamicHUD.dll` and
+`plugins/ControlDynamicHUD.ini`. Keep your personal INI when updating; missing
+Launch FadeDurationMs uses 300ms. Public defaults remain HideNewGame=0,
+HideMissionSelect=0 and ShowDiagnostics=0.
+
+See [release evidence](docs/V1.0.2_RELEASE.md) and the cumulative
+[beta history](docs/V1.0.2_BETA.md).
+
+### v1.0.1 (published; two issues reopened above)
 
 Branch `test/v1.0.1-clean` retains the Mission Log timer fix, targeted component
 heartbeat and late runtime-model bootstrap on the validated v1.0.0 base.
 Temporary extra diagnostic instrumentation is removed; `ShowDiagnostics=0`,
 `HideNewGame=0` and `HideMissionSelect=0` remain the public defaults.
 All validated F1, crosshair-dot, Launch/MultiLaunch and menu protection paths
-are preserved. Merged into main and published at the project owner's request.
-[Download v1.0.1](https://github.com/DeadneM/Control-Dynamic-HUD/releases/tag/v1.0.1).
-CI and local Defender checks passed; fresh gameplay confirmation for the cleaned
-candidate and Nexus scanner acceptance remain pending.
-See [audit and test plan](docs/V1.0.1_AUDIT.md).
+are preserved. Published at the user's request; menu navigation and Launch target
+reticle issues are now tracked in the beta above. The published package remains
+available for rollback. See [original audit and test plan](docs/V1.0.1_AUDIT.md).
 
 ### v1.0.0
 
@@ -144,6 +158,7 @@ FadeDurationMs=300
 [Launch]
 HideTargetReticle=1
 HideDelayMs=0
+FadeDurationMs=300
 ```
 
 This hides the Launch targeting reticle that remains attached to enemies/targets.

@@ -17,6 +17,12 @@ jobs:
       - name: Embedded HUD regression checks
         run: node tests/hud-runtime.cjs
 
+      - name: Embedded menu regression checks
+        run: node tests/menu-runtime.cjs
+
+      - name: Embedded Launch target regression checks
+        run: node tests/launch-runtime.cjs
+
       - name: Build x64 plugin
         shell: pwsh
         run: ./build/build.ps1
@@ -27,7 +33,6 @@ jobs:
           New-Item -ItemType Directory -Force dist/plugins | Out-Null
           Copy-Item build-out/ControlDynamicHUD.dll dist/plugins/
           Copy-Item config/ControlDynamicHUD.ini dist/plugins/
-          Copy-Item README.md dist/
           Compress-Archive -Path dist/* -DestinationPath Control_Dynamic_HUD_CI.zip -Force
 
       - uses: actions/upload-artifact@v4
