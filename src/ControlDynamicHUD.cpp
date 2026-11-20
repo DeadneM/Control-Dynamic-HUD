@@ -176,6 +176,8 @@ struct Config {
     bool mainMenuHideMissionSelect;
     bool startupAutoContinue;
     u32 startupAutoContinueDelayMs;
+    bool startupSkipPressAnyKey;
+    u32 startupSkipPressAnyKeyDelayMs;
 };
 static Config g_cfg{};
 static char g_configScript[2048];
@@ -1301,6 +1303,8 @@ static void load_config(WinApi& a){
     g_cfg.mainMenuHideMissionSelect=a.GetPrivateProfileIntA("MainMenu","HideMissionSelect",0,ini)!=0;
     g_cfg.startupAutoContinue=a.GetPrivateProfileIntA("Startup","AutoContinue",0,ini)!=0;
     g_cfg.startupAutoContinueDelayMs=clamp_u32(a.GetPrivateProfileIntA("Startup","AutoContinueDelayMs",2000,ini),0,10000);
+    g_cfg.startupSkipPressAnyKey=a.GetPrivateProfileIntA("Startup","SkipPressAnyKey",0,ini)!=0;
+    g_cfg.startupSkipPressAnyKeyDelayMs=clamp_u32(a.GetPrivateProfileIntA("Startup","SkipPressAnyKeyDelayMs",1000,ini),0,10000);
 }
 static void build_config_script(){
     char* p=g_configScript;char* end=g_configScript+sizeof(g_configScript);
@@ -2427,7 +2431,135 @@ static bool install_hook(WinApi& api,uptr target){
     DWORD dummy=0;api.VirtualProtect((void*)target,stolen,old,&dummy);api.FlushInstructionCache((HANDLE)(uptr)-1,(void*)target,stolen);return true;
 }
 
-extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 133;}
+using SplashFlowFn = void (WINAPI*)(void*);
+static SplashFlowFn g_originalSplashTick=nullptr,g_originalSplashExit=nullptr;
+static uptr g_splashFlowVtable=0,g_splashPageVtable=0,g_splashPlatformSlot=0;
+static void* g_splashFirstFlow=nullptr;
+static bool g_splashSkipDone=false;
+static u64 g_splashWaitStart=0,g_splashReadyStart=0;
+
+static bool image_contains(uptr base,u32 size,uptr p,usize n){
+    return p>=base&&n<=size&&p-base<=size-n;
+}
+static uptr find_primary_vtable(void* exe,const char* typeName){
+    u8* text=nullptr;u32 textSize=0;if(!get_text(exe,text,textSize))return 0;
+    uptr base=(uptr)exe;u8* b=(u8*)exe;u8* nt=b+rd32(b+0x3C);
+    u32 imageSize=rd32(nt+24+0x38);u16 sections=rd16(nt+6),optionalSize=rd16(nt+20);
+    u8* section=nt+24+optionalSize;uptr found=0;usize nameSize=1;
+    while(typeName[nameSize-1])++nameSize;
+    for(u16 s=0;s<sections;++s,section+=40){
+        if(section[0]!='.'||section[1]!='r'||section[2]!='d'||section[3]!='a'||section[4]!='t'||section[5]!='a')continue;
+        u32 va=rd32(section+12),size=rd32(section+8);
+        for(u32 i=0;i+6*sizeof(uptr)<=size;i+=sizeof(uptr)){
+            uptr at=base+va+i,locator=rdptr((void*)at);
+            if(!image_contains(base,imageSize,locator,24)||rd32((void*)locator)!=1||
+               rd32((void*)(locator+4))!=0||rd32((void*)(locator+8))!=0)continue;
+            uptr descriptor=base+rd32((void*)(locator+12));
+            if(!image_contains(base,imageSize,descriptor,16+nameSize)||
+               !streq_ascii((const char*)(descriptor+16),typeName))continue;
+            uptr vt=at+sizeof(uptr);bool code=true;
+            for(int k=0;k<5;++k){uptr fn=rdptr((void*)(vt+k*sizeof(uptr)));
+                if(fn<(uptr)text||fn>=(uptr)text+textSize){code=false;break;}}
+            if(!code)continue;
+            if(found)return 0;found=vt;
+        }
+    }
+    return found;
+}
+static bool match_bytes(uptr p,const u8* bytes,usize count){
+    for(usize i=0;i<count;++i)if(rd8((void*)(p+i))!=bytes[i])return false;
+    return true;
+}
+static uptr find_splash_window(uptr start,usize size,const u8* pat,const char* mask,usize len){
+    uptr found=0;
+    for(usize i=0;i+len<=size;++i){bool match=true;
+        for(usize k=0;k<len;++k)if(mask[k]=='x'&&rd8((void*)(start+i+k))!=pat[k]){match=false;break;}
+        if(match){if(found)return 0;found=start+i;}
+    }
+    return found;
+}
+static bool splash_page_ready(void* state){
+    if(!g_pageGetView||!g_coherentBase||!g_splashPlatformSlot)return false;
+    uptr platform=rdptr((void*)g_splashPlatformSlot);
+    if(!platform||rd32((void*)(platform+0x4F8))!=0)return false;
+    void* page=(void*)rdptr((u8*)state+0x28);
+    if(!page||rdptr(page)!=g_splashPageVtable||rd8((u8*)page+0xD0)!=1)return false;
+    void* view=g_pageGetView(page);uptr vt=view?rdptr(view):0;
+    return vt==(uptr)g_coherentBase+kPublicViewVtableRva&&
+      rdptr((void*)(vt+61u*sizeof(uptr)))==(uptr)g_coherentBase+kExecuteScriptRva;
+}
+static void WINAPI HookSplashTick(void* self){
+    if(g_cfg.startupSkipPressAnyKey&&!g_splashSkipDone&&self&&rdptr(self)==g_splashFlowVtable){
+        u64 now=g_GetTickCount64?g_GetTickCount64():0;
+        if(!g_splashFirstFlow){g_splashFirstFlow=self;g_splashWaitStart=now;}
+        if(self!=g_splashFirstFlow||!now||now<g_splashWaitStart||now-g_splashWaitStart>=30000||
+           rd32((u8*)self+0x18)!=0||rd8((u8*)self+0x24)!=0){
+            g_splashSkipDone=true;
+        }else if(splash_page_ready(self)){
+            if(!g_splashReadyStart)g_splashReadyStart=now;
+            if(now-g_splashReadyStart>=g_cfg.startupSkipPressAnyKeyDelayMs){
+                // The native PC waiting branch consumes this flag, clears it,
+                // then runs its ordinary user/profile checks. No global keypress.
+                g_splashSkipDone=true;
+                *(volatile u8*)((u8*)self+0x24)=1;
+                log_line("SkipPressAnyKey requested once through the verified native splash wait flag; transition is not yet proven.");
+            }
+        }else if(g_splashReadyStart){g_splashSkipDone=true;}
+    }
+    // Do not touch self after the native call: it can transition/destroy the state.
+    if(g_originalSplashTick)g_originalSplashTick(self);
+}
+static void WINAPI HookSplashExit(void* self){
+    // Manual progression also consumes the option; never skip a later title return.
+    g_splashSkipDone=true;
+    if(g_originalSplashExit)g_originalSplashExit(self);
+}
+static bool install_splash_skip(WinApi& api,void* exe,void* ui){
+    if(!g_cfg.startupSkipPressAnyKey)return true;
+    if(!g_GetTickCount64||!g_pageGetView)return false;
+    uptr flow=find_primary_vtable(exe,".?AVProgramFlowClientStateSplashScreen@@");
+    uptr page=find_primary_vtable(exe,".?AVUISplashScreen@@");
+    if(!flow||!page)return false;
+    uptr tick=rdptr((void*)(flow+8)),exit=rdptr((void*)(flow+32)),ready=rdptr((void*)(page+28*8));
+    u8* text=nullptr;u32 size=0;if(!get_text(exe,text,size))return false;
+    if(tick<(uptr)text||tick+0x400>(uptr)text+size||exit<(uptr)text||exit+0x40>(uptr)text+size||
+       ready<(uptr)text||ready+0x60>(uptr)text+size)return false;
+    static const u8 tickHead[]={0x48,0x8B,0xC4,0x56,0x57,0x41,0x54,0x41,0x56,0x41,0x57,0x48,0x81,0xEC,0x60,0x01,0,0,
+      0x48,0xC7,0x44,0x24,0x48,0xFE,0xFF,0xFF,0xFF,0x48,0x89,0x58,0x10,0x48,0x89,0x68,0x18};
+    static const u8 phase[]={0x48,0x8B,0xF9,0x8B,0x49,0x18,0x85,0xC9};
+    static const u8 exitHead[]={0x40,0x53,0x48,0x83,0xEC,0x20,0x48,0x8B,0xD9,0x33,0xD2};
+    static const u8 unloadCall[]={0x48,0x8B,0x4B,0x28,0xFF,0x15};
+    static const u8 readyHead[]={0x40,0x57,0x48,0x83,0xEC,0x40,0x48,0x8B,0x05};
+    static const u8 readySet[]={0xC6,0x87,0xD0,0,0,0,1};
+    if(!match_bytes(tick,tickHead,sizeof(tickHead))||!match_bytes(tick+0x35,phase,sizeof(phase))||
+       !match_bytes(exit,exitHead,sizeof(exitHead))||!match_bytes(exit+0x1B,unloadCall,sizeof(unloadCall))||
+       !match_bytes(ready,readyHead,sizeof(readyHead))||!match_bytes(ready+0x49,readySet,sizeof(readySet)))return false;
+    uptr unloadSlot=exit+0x25+(s64)*(s32*)(exit+0x21);
+    uptr expectedUnload=(uptr)resolve_export(ui,"?unloadPage@Page@ui@@QEAAXXZ");
+    uptr base=(uptr)exe;u8* nt=(u8*)exe+rd32((u8*)exe+0x3C);u32 imageSize=rd32(nt+24+0x38);
+    if(!expectedUnload||!image_contains(base,imageSize,unloadSlot,8)||rdptr((void*)unloadSlot)!=expectedUnload)return false;
+    static const u8 platformPat[]={0x48,0x8B,0x05,0,0,0,0,0x44,0x0F,0xB6,0xA0,0x3B,0x01,0,0,0x44,0x8B,0xB8,0xF8,0x04,0,0};
+    static const char platformMask[]="xxx????xxxxxxxxxxxxxxx";
+    static const u8 advancePat[]={0x40,0x38,0x77,0x24,0x0F,0x84,0,0,0,0,0xEB,0x0C,0x49,0x8B,0xCE,0xFF,0x15,
+      0,0,0,0,0x89,0x47,0x20,0x40,0x88,0x77,0x24};
+    static const char advanceMask[]="xxxxxx????xxxxxxx????xxxxxxx";
+    static_assert(sizeof(platformMask)-1==sizeof(platformPat),"platform signature mask length");
+    static_assert(sizeof(advanceMask)-1==sizeof(advancePat),"advance signature mask length");
+    uptr platformRef=find_splash_window(tick,0x400,platformPat,platformMask,sizeof(platformPat));
+    if(!platformRef||!find_splash_window(tick,0x400,advancePat,advanceMask,sizeof(advancePat)))return false;
+    uptr platformSlot=platformRef+7+(s64)*(s32*)(platformRef+3);
+    if(!image_contains(base,imageSize,platformSlot,8))return false;
+    DWORD old=0;if(!api.VirtualProtect((void*)(flow+8),32,PAGE_EXECUTE_READWRITE,&old))return false;
+    g_splashFlowVtable=flow;g_splashPageVtable=page;g_splashPlatformSlot=platformSlot;
+    g_originalSplashTick=(SplashFlowFn)tick;g_originalSplashExit=(SplashFlowFn)exit;
+    *(uptr*)(flow+8)=(uptr)&HookSplashTick;*(uptr*)(flow+32)=(uptr)&HookSplashExit;
+    DWORD dummy=0;api.VirtualProtect((void*)(flow+8),32,old,&dummy);
+    api.FlushInstructionCache((HANDLE)(uptr)-1,(void*)(flow+8),32);
+    log_line("SkipPressAnyKey native splash state/PC/page signatures verified; one-shot hooks installed.");
+    return true;
+}
+
+extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 134;}
 extern "C" __declspec(dllexport) void* CDH_RelocAnchor=(void*)&CDH_Version;
 
 extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
@@ -2439,12 +2571,14 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     load_config(api);g_showHudVk=parse_vk(g_cfg.showHudKey);build_config_script();
     g_WriteFile=api.WriteFile;g_log=api.CreateFileW(L"plugins\\ControlDynamicHUD.log",GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
     if(!g_log||(uptr)g_log==INVALID_HANDLE_VALUE_U)return 1;
-    log_line("Control Dynamic HUD v1.0.3 BETA 1 AUTO CONTINUE");log_line("Mode: validated v1.0.2 + optional startup Continue action");
+    log_line("Control Dynamic HUD v1.0.3 BETA 2 STARTUP FLOW");log_line("Mode: validated AutoContinue beta1 + optional one-shot native title skip");
     log_cstr("Config: Enabled=");log_dec(g_cfg.enabled?1:0);log_cstr(" ShowHUDKey=");log_cstr(g_cfg.showHudKey);log_cstr(" VK=");log_hex(g_showHudVk);log_cstr(" ShowHUDDurationMs=");log_dec(g_cfg.showHudDurationMs);
     log_cstr(" HideNewGame=");log_dec(g_cfg.mainMenuHideNewGame?1:0);
     log_cstr(" HideMissionSelect=");log_dec(g_cfg.mainMenuHideMissionSelect?1:0);
     log_cstr(" AutoContinue=");log_dec(g_cfg.startupAutoContinue?1:0);
     log_cstr(" AutoContinueDelayMs=");log_dec(g_cfg.startupAutoContinueDelayMs);
+    log_cstr(" SkipPressAnyKey=");log_dec(g_cfg.startupSkipPressAnyKey?1:0);
+    log_cstr(" SkipPressAnyKeyDelayMs=");log_dec(g_cfg.startupSkipPressAnyKeyDelayMs);
     log_cstr(" LaunchHideTargetReticle=");log_dec(g_cfg.launchHideReticle?1:0);
     log_cstr(" LaunchHideDelayMs=");log_dec(g_cfg.launchHideDelayMs);
     log_cstr(" LaunchFadeDurationMs=");log_dec(g_cfg.launchFadeDurationMs);
@@ -2490,6 +2624,8 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     log_cstr("HUD constructor target: ");log_hex(ctor);log_bytes("\r\n",2);
     if(!install_hook(api,factory)){log_line("FAIL-OPEN: hook installation failed.");return 1;}
     log_line("HUD factory hook installed.");
+    if(g_cfg.startupSkipPressAnyKey&&!install_splash_skip(api,exe,ui))
+        log_line("FAIL-OPEN: SkipPressAnyKey unsupported state/page layout; title prompt remains manual.");
 
     if(g_cfg.mainMenuHideNewGame||g_cfg.mainMenuHideMissionSelect||g_cfg.startupAutoContinue){
         u32 mc=0;uptr mf=scan_menu_factory(exe,mc);

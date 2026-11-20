@@ -14,6 +14,26 @@ A modern dynamic-HUD plugin for **Control** (PC), rebuilt as a native x64 plugin
 
 ## Current status
 
+### v1.0.3 beta 2 - optional title prompt skip
+
+AutoContinue beta 1 was reported working by the user. Beta 2 keeps that path and
+adds an independent option for the initial "Press any key" title screen:
+
+```ini
+[Startup]
+SkipPressAnyKey=0
+SkipPressAnyKeyDelayMs=1000
+AutoContinue=0
+AutoContinueDelayMs=2000
+```
+
+Both options default to 0. Set both to 1 for the initial title -> normal Continue
+startup flow. SkipPressAnyKey requests the game's native PC title-wait path once,
+after its own page is ready; ordinary profile checks and consent dialogs remain
+under the game's control. A later return to the title screen stays manual.
+Existing personal INIs without the new keys keep the title skip disabled.
+This new skip is experimental; see [startup-flow notes](docs/V1.0.3_STARTUP_FLOW.md).
+
 ### v1.0.3 beta 1 - optional automatic Continue
 
 Experimental branch `beta/v1.0.3-auto-continue`, based on validated v1.0.2.

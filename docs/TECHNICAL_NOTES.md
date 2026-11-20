@@ -1,5 +1,13 @@
 # Technical Notes
 
+## v1.0.3 beta 2 - initial title prompt skip (2026-11-20)
+
+The user confirms AutoContinue beta 1 works. The new independent default-off
+SkipPressAnyKey option uses the exact native PC splash waiting path once after
+page readiness; AutoContinue itself is unchanged. See
+[V1.0.3_STARTUP_FLOW.md](V1.0.3_STARTUP_FLOW.md) for the local DX11/DX12 audit,
+guards, tests, acceptance and rollback.
+
 ## v1.0.3 beta 1 - optional startup Continue (2026-11-20)
 
 New work starts from user-validated v1.0.2 in an isolated worktree, preserving

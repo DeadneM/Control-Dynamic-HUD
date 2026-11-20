@@ -30,6 +30,16 @@ jobs:
         shell: pwsh
         run: ./build/build.ps1
 
+      - name: Native splash state regression checks
+        shell: pwsh
+        run: |
+          clang-cl /nologo /c /O2 /GS- /GR- /EHs-c- /Zl /DWIN32 /D_WINDOWS /Fo:build-out/SplashNativeTests.obj tests/splash-native.cpp
+          if ($LASTEXITCODE -ne 0) { throw "Native tests compile failed" }
+          lld-link /entry:TestMain /subsystem:console /machine:x64 /nodefaultlib /dynamicbase /nxcompat /out:build-out/SplashNativeTests.exe build-out/SplashNativeTests.obj
+          if ($LASTEXITCODE -ne 0) { throw "Native tests link failed" }
+          ./build-out/SplashNativeTests.exe
+          if ($LASTEXITCODE -ne 0) { throw "Native splash test failed: $LASTEXITCODE" }
+
       - name: Stage package
         shell: pwsh
         run: |
