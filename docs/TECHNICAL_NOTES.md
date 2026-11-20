@@ -1,5 +1,13 @@
 # Technical Notes
 
+## v1.0.3 beta 1 - optional startup Continue (2026-11-20)
+
+New work starts from user-validated v1.0.2 in an isolated worktree, preserving
+unrelated FPS changes. AutoContinue defaults to 0 and reuses the game's exact
+Continue event only in the initial ready menu with a save. See
+[V1.0.3_AUTOCONTINUE.md](V1.0.3_AUTOCONTINUE.md) for evidence, cancellation,
+one-shot boundaries, acceptance, rollback and cumulative TODO.
+
 ## v1.0.2 release (2026-11-04)
 
 The user tested and approved beta 2, then authorized release publication with a

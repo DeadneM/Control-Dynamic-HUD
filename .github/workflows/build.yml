@@ -23,6 +23,9 @@ jobs:
       - name: Embedded Launch target regression checks
         run: node tests/launch-runtime.cjs
 
+      - name: AutoContinue regression checks
+        run: node tests/autocontinue-runtime.cjs
+
       - name: Build x64 plugin
         shell: pwsh
         run: ./build/build.ps1

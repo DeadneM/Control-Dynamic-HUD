@@ -14,6 +14,25 @@ A modern dynamic-HUD plugin for **Control** (PC), rebuilt as a native x64 plugin
 
 ## Current status
 
+### v1.0.3 beta 1 - optional automatic Continue
+
+Experimental branch `beta/v1.0.3-auto-continue`, based on validated v1.0.2.
+The new option is disabled by default:
+
+```ini
+[Startup]
+AutoContinue=0
+AutoContinueDelayMs=2000
+```
+
+Set AutoContinue=1 to request the game's normal Continue action once after the
+initial main menu is ready and the game reports an available save. The delay
+is in milliseconds (0-10000). Menu keyboard/mouse/controller input cancels it.
+It does not repeat when returning to the menu. Pause menus, no-save cases and
+startup EULA/privacy/DLC dialogs keep normal manual control. No save-file path
+or slot is selected by the mod. Existing personal INIs without this section
+keep automatic Continue disabled. See [beta notes](docs/V1.0.3_AUTOCONTINUE.md).
+
 ### v1.0.2
 
 Based on v1.0.2 beta 2, tested and approved in-game by the project owner on
@@ -83,6 +102,11 @@ plugins\ControlDynamicHUD.log
 DX11 and DX12 share the same plugin binary.
 
 ## Configuration
+
+### Startup (v1.0.3 beta)
+
+The optional startup settings above do not change the normal menu at defaults.
+This beta requires manual gameplay validation before stable promotion.
 
 ### General
 

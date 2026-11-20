@@ -126,6 +126,9 @@ static void* g_mainMenuPage = nullptr;
 static bool g_menuBindWindowInstalled = false;
 static bool g_menuBindPreInjected = false;
 static u32 g_menuBindPreInjectAttempts = 0;
+static bool g_autoContinueOffered = false;
+static bool g_autoContinueThisReady = false;
+static bool g_autoContinuePreInjected = false;
 
 struct Config {
     bool enabled;
@@ -171,10 +174,13 @@ struct Config {
 
     bool mainMenuHideNewGame;
     bool mainMenuHideMissionSelect;
+    bool startupAutoContinue;
+    u32 startupAutoContinueDelayMs;
 };
 static Config g_cfg{};
 static char g_configScript[2048];
 static char g_menuConfigScript[256];
+static char g_autoContinueConfigScript[256];
 
 static constexpr u32 kCoherentTimeDateStamp = 0x5E8F6E9A;
 static constexpr u32 kCoherentSizeOfImage = 0x329000;
@@ -192,6 +198,7 @@ static const char kMainMenuPreReadyScript[] = R"JS(
  if(window.__CDH_PRENAV_INSTALLED&&engine.on===window.__CDH_PRENAV_ON)return;
  if(!window.__CDH_SHOULD_DOUBLE_NAV)window.__CDH_SHOULD_DOUBLE_NAV=function(){return false;};
  var originalOn=engine.on;
+ window.__CDH_PRENAV_ORIGINAL_ON=originalOn;
  engine.on=function(name,callback,context){
   var n=String(name||'');
   if((n==='OnNavigateDown'||n==='OnNavigateUp')&&typeof callback==='function'){
@@ -214,6 +221,90 @@ static const char kMainMenuPreReadyScript[] = R"JS(
  window.__CDH_PRENAV_STATUS='wrapped';
 })();
 )JS";
+
+static const char kAutoContinueScript[] = R"JS(
+(function(){
+ var CFG=window.__CDH_AUTOCONTINUE_CONFIG||{enabled:0,delayMs:2000};
+ if(!CFG.enabled||window.__CDH_AUTO_CONTINUE)return;
+ var state=window.__CDH_AUTO_CONTINUE={done:false,status:'waiting-menu'};
+ var initialEngine=window.engine;
+ var timer=0,deadline=Date.now()+30000,seenMenu=false,eligible=false,readyAt=0;
+ var inputEvents=['keydown','mousedown','wheel','touchstart'];
+ var gameEvents=['OnNavigateUp','OnNavigateDown','OnNavigateLeft','OnNavigateRight',
+  'OnSelect','OnCancel','OnStart','OnOptions','OnPrev','OnNext','OnX','OnY','OnContinueGameClicked'];
+ function stop(reason){
+  if(state.done)return;
+  state.done=true;state.status=reason;
+  if(timer){clearTimeout(timer);timer=0;}
+  for(var i=0;i<inputEvents.length;i++)document.removeEventListener(inputEvents[i],cancelInput,true);
+  if(initialEngine&&typeof initialEngine.off==='function'){
+   try{initialEngine.off('ShowMenu',onShowMenu);}catch(x){}
+   for(var j=0;j<gameEvents.length;j++){try{initialEngine.off(gameEvents[j],cancelInput);}catch(x2){}}
+  }
+ }
+ window.__CDH_CANCEL_AUTO_CONTINUE=function(){stop('cancelled-context');};
+ function cancelInput(){if(seenMenu)stop('cancelled-input');}
+ function onShowMenu(options){
+  if(state.done)return;
+  if(seenMenu){stop('cancelled-menu-change');return;}
+  seenMenu=true;
+  if(!options||options.m_bIsPauseMenu!==false||options.m_bIsDemo===true){stop('not-startup-menu');return;}
+  if(options.m_bSaveAvailable!==true){stop('no-save');return;}
+  if(options.m_bShouldShowEula||options.m_bShouldShowPrivacy||options.m_bShouldShowDLCPopup){stop('startup-dialog');return;}
+  eligible=true;state.status='waiting-ready';
+ }
+ function menuReady(){
+  if(!document.body||!document.body.classList.contains('main-menu'))return false;
+  if(document.body.classList.contains('confirm-box--active')||document.querySelector('.app--pause-menu'))return false;
+  var root=document.querySelector('.main-menu-root');
+  if(!root||!root.isConnected||root.classList.contains('main-menu-root--hidden')||root.classList.contains('confirm-box--active'))return false;
+  var box=root.getBoundingClientRect(),css=window.getComputedStyle(root);
+  return box.width>0&&box.height>0&&css.display!=='none'&&css.visibility!=='hidden'&&parseFloat(css.opacity)>0;
+ }
+ function tick(){
+  timer=0;if(state.done)return;
+  if(window.engine!==initialEngine){stop('cancelled-engine-change');return;}
+  if(Date.now()>=deadline){stop('timeout');return;}
+  if(eligible){
+   var root=document.querySelector('.main-menu-root');
+   if((document.body&&document.body.classList.contains('confirm-box--active'))||
+      (root&&root.classList.contains('confirm-box--active'))||document.querySelector('.app--pause-menu')){
+    stop('blocked-menu');return;
+   }
+   if(!menuReady()){
+    // Once the initial menu was visible, leaving it must not arm a later return.
+    if(readyAt){stop('cancelled-menu-hidden');return;}
+   }else{
+    if(!readyAt){readyAt=Date.now();state.status='countdown';}
+    if(Date.now()-readyAt>=CFG.delayMs){
+     stop('requested');
+     try{engine.trigger('OnContinueGameClicked');}catch(x){state.status='trigger-error';}
+     return;
+    }
+   }
+  }
+  timer=setTimeout(tick,100);
+ }
+ if(!window.engine||engine.isAttached===false||typeof engine.on!=='function'||
+    typeof engine.off!=='function'||typeof engine.trigger!=='function'){
+  stop('unsupported-engine');return;
+ }
+ try{
+  // Do not run cancellation subscribers through the navigation-skip wrapper:
+  // engine.off must receive the very same callback that was registered.
+  var subscribe=engine.on;
+  if(subscribe===window.__CDH_PRENAV_ON&&typeof window.__CDH_PRENAV_ORIGINAL_ON==='function')
+   subscribe=window.__CDH_PRENAV_ORIGINAL_ON;
+  subscribe.call(engine,'ShowMenu',onShowMenu);
+  for(var i=0;i<gameEvents.length;i++)subscribe.call(engine,gameEvents[i],cancelInput);
+  for(var j=0;j<inputEvents.length;j++)document.addEventListener(inputEvents[j],cancelInput,true);
+  timer=setTimeout(tick,100);
+ }catch(x){stop('listener-error');}
+})();
+)JS";
+
+static const char kCancelAutoContinueScript[] =
+"if(window.__CDH_CANCEL_AUTO_CONTINUE)window.__CDH_CANCEL_AUTO_CONTINUE();";
 
 static const char kMainMenuScript[] = R"JS(
 (function(){
@@ -1208,6 +1299,8 @@ static void load_config(WinApi& a){
     g_cfg.multiLaunchHideDelayMs=clamp_u32(a.GetPrivateProfileIntA("MultiLaunch","HideDelayMs",0,ini),0,60000);
     g_cfg.mainMenuHideNewGame=a.GetPrivateProfileIntA("MainMenu","HideNewGame",0,ini)!=0;
     g_cfg.mainMenuHideMissionSelect=a.GetPrivateProfileIntA("MainMenu","HideMissionSelect",0,ini)!=0;
+    g_cfg.startupAutoContinue=a.GetPrivateProfileIntA("Startup","AutoContinue",0,ini)!=0;
+    g_cfg.startupAutoContinueDelayMs=clamp_u32(a.GetPrivateProfileIntA("Startup","AutoContinueDelayMs",2000,ini),0,10000);
 }
 static void build_config_script(){
     char* p=g_configScript;char* end=g_configScript+sizeof(g_configScript);
@@ -1245,6 +1338,11 @@ static void build_config_script(){
     m=app(m,mend,",hideMissionSelect:");
     m=app_u32(m,mend,g_cfg.mainMenuHideMissionSelect?1:0);
     m=app(m,mend,"};");
+    char* ac=g_autoContinueConfigScript;char* acend=g_autoContinueConfigScript+sizeof(g_autoContinueConfigScript);
+    ac=app(ac,acend,"window.__CDH_AUTOCONTINUE_CONFIG={enabled:");
+    ac=app_u32(ac,acend,g_cfg.startupAutoContinue?1:0);
+    ac=app(ac,acend,",delayMs:");ac=app_u32(ac,acend,g_cfg.startupAutoContinueDelayMs);
+    ac=app(ac,acend,"};");
 }
 static bool get_text(void* module,u8*& text,u32& size){
     u8* b=(u8*)module;if(!b||rd16(b)!=0x5A4D)return false;u32 e=rd32(b+0x3C);u8* nt=b+e;if(rd32(nt)!=0x4550)return false;u16 ns=rd16(nt+6),os=rd16(nt+20);u8* sec=nt+24+os;
@@ -2022,6 +2120,18 @@ static bool inject_menu_nav_wrapper(void* page,const char* where){
     return true;
 }
 
+static bool inject_auto_continue(void* page){
+    if(!page||!g_pageGetView||!g_coherentBase)return false;
+    void* view=g_pageGetView(page);
+    uptr vt=view?rdptr(view):0;
+    uptr exec=vt?rdptr((u8*)vt+61u*sizeof(uptr)):0;
+    if(!view||vt!=(uptr)g_coherentBase+kPublicViewVtableRva||
+       exec!=(uptr)g_coherentBase+kExecuteScriptRva)return false;
+    ((ExecuteScriptFn)exec)(view,g_autoContinueConfigScript,nullptr);
+    ((ExecuteScriptFn)exec)(view,kAutoContinueScript,nullptr);
+    return true;
+}
+
 static void WINAPI HookPageBind(void* page,int bindType,const void* name,void* handler){
     if(page==g_mainMenuPage&&!g_menuBindPreInjected&&g_cfg.mainMenuHideNewGame){
         ++g_menuBindPreInjectAttempts;
@@ -2032,6 +2142,9 @@ static void WINAPI HookPageBind(void* page,int bindType,const void* name,void* h
         }else if(g_menuBindPreInjectAttempts<=3){
             log_line("Main menu bind-window injection not ready yet; will retry on the next Page::bind.");
         }
+    }
+    if(page==g_mainMenuPage&&g_autoContinueThisReady&&!g_autoContinuePreInjected){
+        if(inject_auto_continue(page))g_autoContinuePreInjected=true;
     }
     if(g_originalPageBind)g_originalPageBind(page,bindType,name,handler);
 }
@@ -2092,6 +2205,11 @@ static bool install_menu_page_bind_iat_hook(void* ui,uptr originalReady){
 
 static void WINAPI HookMenuReady(void* self){
     u32 n=++g_menuReadyCalls;
+    // One offer per process, independent of recreated native pages/JS contexts.
+    bool offerAutoContinue=g_cfg.startupAutoContinue&&!g_autoContinueOffered;
+    if(offerAutoContinue)g_autoContinueOffered=true;
+    g_autoContinueThisReady=offerAutoContinue;
+    g_autoContinuePreInjected=false;
     // A page may get a fresh JS/engine context without a new native factory call.
     // Rearm inside each ready callback; preserve the validated Page::bind timing.
     g_mainMenuPage=self;
@@ -2110,6 +2228,7 @@ static void WINAPI HookMenuReady(void* self){
     }
 
     if(g_originalMenuReady)g_originalMenuReady(self);
+    g_autoContinueThisReady=false;
     log_cstr("Main menu onReadyForBindings #");log_dec(n);log_bytes("\r\n",2);
 
     if(g_menuBindWindowInstalled&&!g_menuBindPreInjected&&g_cfg.mainMenuHideNewGame)
@@ -2123,6 +2242,13 @@ static void WINAPI HookMenuReady(void* self){
     if(!view||vt!=expectedVt||exec!=expected)return;
     ((ExecuteScriptFn)exec)(view,g_menuConfigScript,nullptr);
     ((ExecuteScriptFn)exec)(view,kMainMenuScript,nullptr);
+    if(g_cfg.startupAutoContinue){
+        if(!offerAutoContinue||!g_autoContinuePreInjected)
+            ((ExecuteScriptFn)exec)(view,kCancelAutoContinueScript,nullptr);
+        if(offerAutoContinue)log_line(g_autoContinuePreInjected?
+          "AutoContinue listener offered once in the first Page::bind window; loading is not yet proven.":
+          "AutoContinue not armed: first Page::bind window unavailable; staying at the menu.");
+    }
     log_line("Main menu cleanup script injected after original onReadyForBindings.");
 }
 static bool install_menu_ready_hook(void* menu){
@@ -2301,7 +2427,7 @@ static bool install_hook(WinApi& api,uptr target){
     DWORD dummy=0;api.VirtualProtect((void*)target,stolen,old,&dummy);api.FlushInstructionCache((HANDLE)(uptr)-1,(void*)target,stolen);return true;
 }
 
-extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 132;}
+extern "C" __declspec(dllexport) int WINAPI CDH_Version(){return 133;}
 extern "C" __declspec(dllexport) void* CDH_RelocAnchor=(void*)&CDH_Version;
 
 extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
@@ -2313,10 +2439,12 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     load_config(api);g_showHudVk=parse_vk(g_cfg.showHudKey);build_config_script();
     g_WriteFile=api.WriteFile;g_log=api.CreateFileW(L"plugins\\ControlDynamicHUD.log",GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
     if(!g_log||(uptr)g_log==INVALID_HANDLE_VALUE_U)return 1;
-    log_line("Control Dynamic HUD v1.0.2");log_line("Mode: validated menu navigation + scoped Launch target visibility/fade");
+    log_line("Control Dynamic HUD v1.0.3 BETA 1 AUTO CONTINUE");log_line("Mode: validated v1.0.2 + optional startup Continue action");
     log_cstr("Config: Enabled=");log_dec(g_cfg.enabled?1:0);log_cstr(" ShowHUDKey=");log_cstr(g_cfg.showHudKey);log_cstr(" VK=");log_hex(g_showHudVk);log_cstr(" ShowHUDDurationMs=");log_dec(g_cfg.showHudDurationMs);
     log_cstr(" HideNewGame=");log_dec(g_cfg.mainMenuHideNewGame?1:0);
     log_cstr(" HideMissionSelect=");log_dec(g_cfg.mainMenuHideMissionSelect?1:0);
+    log_cstr(" AutoContinue=");log_dec(g_cfg.startupAutoContinue?1:0);
+    log_cstr(" AutoContinueDelayMs=");log_dec(g_cfg.startupAutoContinueDelayMs);
     log_cstr(" LaunchHideTargetReticle=");log_dec(g_cfg.launchHideReticle?1:0);
     log_cstr(" LaunchHideDelayMs=");log_dec(g_cfg.launchHideDelayMs);
     log_cstr(" LaunchFadeDurationMs=");log_dec(g_cfg.launchFadeDurationMs);
@@ -2363,7 +2491,7 @@ extern "C" BOOL WINAPI DllMain(HMODULE,DWORD reason,LPVOID){
     if(!install_hook(api,factory)){log_line("FAIL-OPEN: hook installation failed.");return 1;}
     log_line("HUD factory hook installed.");
 
-    if(g_cfg.mainMenuHideNewGame||g_cfg.mainMenuHideMissionSelect){
+    if(g_cfg.mainMenuHideNewGame||g_cfg.mainMenuHideMissionSelect||g_cfg.startupAutoContinue){
         u32 mc=0;uptr mf=scan_menu_factory(exe,mc);
         log_cstr("Main menu factory signature matches: ");log_dec(mc);
         log_cstr(" first=");log_hex(mf);log_bytes("\r\n",2);
