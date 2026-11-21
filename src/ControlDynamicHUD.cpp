@@ -226,7 +226,7 @@ static const char kMainMenuPreReadyScript[] = R"JS(
 
 static const char kAutoContinueScript[] = R"JS(
 (function(){
- var CFG=window.__CDH_AUTOCONTINUE_CONFIG||{enabled:0,delayMs:2000};
+ var CFG=window.__CDH_AUTOCONTINUE_CONFIG||{enabled:0,delayMs:0};
  if(!CFG.enabled||window.__CDH_AUTO_CONTINUE)return;
  var state=window.__CDH_AUTO_CONTINUE={done:false,status:'waiting-menu'};
  var initialEngine=window.engine;
@@ -1302,9 +1302,9 @@ static void load_config(WinApi& a){
     g_cfg.mainMenuHideNewGame=a.GetPrivateProfileIntA("MainMenu","HideNewGame",0,ini)!=0;
     g_cfg.mainMenuHideMissionSelect=a.GetPrivateProfileIntA("MainMenu","HideMissionSelect",0,ini)!=0;
     g_cfg.startupAutoContinue=a.GetPrivateProfileIntA("Startup","AutoContinue",0,ini)!=0;
-    g_cfg.startupAutoContinueDelayMs=clamp_u32(a.GetPrivateProfileIntA("Startup","AutoContinueDelayMs",2000,ini),0,10000);
+    g_cfg.startupAutoContinueDelayMs=clamp_u32(a.GetPrivateProfileIntA("Startup","AutoContinueDelayMs",0,ini),0,10000);
     g_cfg.startupSkipPressAnyKey=a.GetPrivateProfileIntA("Startup","SkipPressAnyKey",0,ini)!=0;
-    g_cfg.startupSkipPressAnyKeyDelayMs=clamp_u32(a.GetPrivateProfileIntA("Startup","SkipPressAnyKeyDelayMs",1000,ini),0,10000);
+    g_cfg.startupSkipPressAnyKeyDelayMs=clamp_u32(a.GetPrivateProfileIntA("Startup","SkipPressAnyKeyDelayMs",0,ini),0,10000);
 }
 static void build_config_script(){
     char* p=g_configScript;char* end=g_configScript+sizeof(g_configScript);

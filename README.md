@@ -22,9 +22,9 @@ adds an independent option for the initial "Press any key" title screen:
 ```ini
 [Startup]
 SkipPressAnyKey=0
-SkipPressAnyKeyDelayMs=1000
+SkipPressAnyKeyDelayMs=0
 AutoContinue=0
-AutoContinueDelayMs=2000
+AutoContinueDelayMs=0
 ```
 
 Both options default to 0. Set both to 1 for the initial title -> normal Continue
@@ -42,7 +42,7 @@ The new option is disabled by default:
 ```ini
 [Startup]
 AutoContinue=0
-AutoContinueDelayMs=2000
+AutoContinueDelayMs=0
 ```
 
 Set AutoContinue=1 to request the game's normal Continue action once after the

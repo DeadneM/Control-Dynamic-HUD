@@ -1,5 +1,11 @@
 # Technical Notes
 
+## Startup defaults approved (2026-11-21)
+
+The user validates beta 2 startup flow and requests all four Startup values at 0.
+Shipped INI and missing-key/script fallbacks are aligned; functional readiness
+and one-shot guards are preserved. See V1.0.3_STARTUP_FLOW.md for the exact values.
+
 ## v1.0.3 beta 2 - initial title prompt skip (2026-11-20)
 
 The user confirms AutoContinue beta 1 works. The new independent default-off
