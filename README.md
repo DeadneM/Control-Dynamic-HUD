@@ -14,7 +14,7 @@ A modern dynamic-HUD plugin for **Control** (PC), rebuilt as a native x64 plugin
 
 ## Current status
 
-### v1.0.3 beta 2 - optional title prompt skip
+### v1.0.3 - optional automatic startup
 
 AutoContinue beta 1 was reported working by the user. Beta 2 keeps that path and
 adds an independent option for the initial "Press any key" title screen:
@@ -32,7 +32,7 @@ startup flow. SkipPressAnyKey requests the game's native PC title-wait path once
 after its own page is ready; ordinary profile checks and consent dialogs remain
 under the game's control. A later return to the title screen stays manual.
 Existing personal INIs without the new keys keep the title skip disabled.
-This new skip is experimental; see [startup-flow notes](docs/V1.0.3_STARTUP_FLOW.md).
+The startup flow was tested and approved by the project owner on 2026-11-21. See [startup-flow notes](docs/V1.0.3_STARTUP_FLOW.md).
 
 ### v1.0.3 beta 1 - optional automatic Continue
 
@@ -100,7 +100,7 @@ The public release keeps the save-protection menu options **disabled by default*
 
 ## Installation
 
-Copy these files into:
+Copy the DLL from the release ZIP into:
 
 ```text
 Control\plugins\
@@ -110,8 +110,9 @@ Files:
 
 ```text
 ControlDynamicHUD.dll
-ControlDynamicHUD.ini
 ```
+
+Since v1.0.3, ZIPs contain only the DLL. Keep your existing INI when updating. Without an INI, the plugin uses its built-in defaults and does not create an INI. Download the optional ControlDynamicHUD.ini release asset separately to customize settings; place it beside the DLL.
 
 The plugin writes:
 
@@ -123,7 +124,7 @@ DX11 and DX12 share the same plugin binary.
 
 ## Configuration
 
-### Startup (v1.0.3 beta)
+### Startup (v1.0.3)
 
 The optional startup settings above do not change the normal menu at defaults.
 This beta requires manual gameplay validation before stable promotion.

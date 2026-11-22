@@ -45,34 +45,27 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force dist/plugins | Out-Null
           Copy-Item build-out/ControlDynamicHUD.dll dist/plugins/
-          Copy-Item config/ControlDynamicHUD.ini dist/plugins/
           Compress-Archive -Path dist/* -DestinationPath Control_Dynamic_HUD_CI.zip -Force
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [IO.Compression.ZipFile]::OpenRead((Resolve-Path Control_Dynamic_HUD_CI.zip))
+          try {
+            $files = @($zip.Entries | Where-Object { $_.Name } | ForEach-Object FullName)
+            if ($files.Count -ne 1 -or $files[0] -ne 'plugins/ControlDynamicHUD.dll') { throw "Unexpected package contents" }
+          } finally { $zip.Dispose() }
 
       - uses: actions/upload-artifact@v4
         with:
           name: Control-Dynamic-HUD-CI
           path: Control_Dynamic_HUD_CI.zip
 
-      - name: Publish v1.0.0 release
-        if: github.event_name == 'push' && github.ref == 'refs/heads/release/v1.0.0'
+      - name: Publish v1.0.3 release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          Copy-Item Control_Dynamic_HUD_CI.zip Control_Dynamic_HUD_v1.0.0.zip
-          $notes = @"
-          First public release of the configurable native Control Dynamic HUD rewrite.
-
-          Highlights:
-          - Dynamic health, mission log, crosshair and expedition HUD behavior
-          - Native Launch target-reticle suppression
-          - Independent Launch / Multi Launch icon and white-outline controls
-          - Validated normal-crosshair center-dot mask
-          - Global F1 Show HUD hotkey
-          - Optional New Game / Mission Select completed-save protection
-          - New Game navigation ghost fixed while preserving the normal menu image/video background
-          - Single x64 plugin for DX11 and DX12
-
-          Public release defaults keep HideNewGame=0 and HideMissionSelect=0.
-          "@
-          gh release create v1.0.0 Control_Dynamic_HUD_v1.0.0.zip --target "$env:GITHUB_SHA" --title "Control Dynamic HUD v1.0.0" --notes "$notes"
+          Copy-Item Control_Dynamic_HUD_CI.zip Control_Dynamic_HUD_v1.0.3.zip
+          gh release view v1.0.3 *> $null
+          if ($LASTEXITCODE -eq 0) { Write-Host "v1.0.3 already published; leaving it unchanged"; exit 0 }
+          gh release create v1.0.3 Control_Dynamic_HUD_v1.0.3.zip config/ControlDynamicHUD.ini --target "$env:GITHUB_SHA" --title "Control Dynamic HUD v1.0.3" --notes-file docs/CHANGELOG_v1.0.3.md
+          if ($LASTEXITCODE -ne 0) { throw "Release publication failed" }

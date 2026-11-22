@@ -1,3 +1,7 @@
+## v1.0.3 release - 2026-11-22
+
+User authorized main promotion and release of the validated startup flow. ZIP packaging now contains only the DLL; optional INI is a separate asset. See V1.0.3_RELEASE.md and CHANGELOG_v1.0.3.md. Existing runtime guards and zero Startup defaults are retained.
+
 # Technical Notes
 
 ## Startup defaults approved (2026-11-21)
